@@ -1,0 +1,27 @@
+schema_version = "1.0.0"
+
+id = "mesh2marker"
+version = "0.0.0"
+name = "Mesh2Marker"
+tagline = "Map MHR mesh vertices to OpenSim anatomical markers"
+maintainer = "PLACEHOLDER NAME <placeholder@example.com>"
+type = "add-on"
+
+# Minimum Blender version required by the extension.
+blender_version_min = "4.2.0"
+
+# GPL because any code importing bpy is a derivative work of Blender.
+license = ["SPDX:GPL-3.0-or-later"]
+
+# Pure-Python add-on: ship for every standard platform, no compiled wheels.
+platforms = [
+    "windows-x64",
+    "windows-arm64",
+    "macos-x64",
+    "macos-arm64",
+    "linux-x64",
+]
+
+# No third-party compiled wheels are bundled in the runtime. The only wheel ever
+# shipped in a release is our own pure-python `core`, added here when built.
+wheels = []
