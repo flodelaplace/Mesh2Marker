@@ -27,10 +27,12 @@ def _ensure_core_on_path() -> None:
 _ensure_core_on_path()
 
 import bpy  # noqa: E402 (must follow the sys.path shim above)
+import mathutils  # noqa: E402
 from bpy.props import PointerProperty, StringProperty  # noqa: E402
 from bpy.types import Operator, Panel, PropertyGroup  # noqa: E402
 
 MHR_OBJECT_NAME = "MHR_body"
+OPENSIM_COLLECTION_NAME = "OpenSim_model"
 
 
 class Mesh2MarkerProperties(PropertyGroup):
@@ -38,6 +40,18 @@ class Mesh2MarkerProperties(PropertyGroup):
         name="NPZ path",
         description="Path to the MHR .npz sample to load",
         subtype="FILE_PATH",
+        default="",
+    )
+    osim_path: StringProperty(
+        name="OSIM path",
+        description="Path to the OpenSim .osim model file",
+        subtype="FILE_PATH",
+        default="",
+    )
+    geometry_dir: StringProperty(
+        name="Geometry dir",
+        description="Directory holding the segment geometry files (.stl)",
+        subtype="DIR_PATH",
         default="",
     )
 
@@ -91,6 +105,82 @@ class MESH2MARKER_OT_load_mhr(Operator):
         return {"FINISHED"}
 
 
+class MESH2MARKER_OT_load_opensim(Operator):
+    """Parse an OpenSim model and display its segments assembled in the neutral pose."""
+
+    bl_idname = "mesh2marker.load_opensim"
+    bl_label = "Load OpenSim model"
+    bl_description = (
+        "Parse the .osim model, run forward kinematics, and place each segment's "
+        "geometry standing (Z-up)"
+    )
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        props = context.scene.mesh2marker
+        osim_path = bpy.path.abspath(props.osim_path.strip()) if props.osim_path else ""
+        geometry_dir = (
+            bpy.path.abspath(props.geometry_dir.strip()) if props.geometry_dir else ""
+        )
+        if not osim_path:
+            self.report({"ERROR"}, "OSIM path is empty")
+            return {"CANCELLED"}
+        if not geometry_dir:
+            self.report({"ERROR"}, "Geometry directory is empty")
+            return {"CANCELLED"}
+
+        # All parsing, kinematics, path resolution and matrices come from the core.
+        from mesh2marker.geometry import (
+            Y_UP_TO_Z_UP,
+            geometry_world_matrix,
+            resolve_geometry_file,
+        )
+        from mesh2marker.kinematics import forward_kinematics
+        from mesh2marker.osim import parse_osim
+
+        try:
+            model = parse_osim(osim_path)
+            world = forward_kinematics(model)
+        except (OSError, ValueError) as exc:
+            self.report({"ERROR"}, f"Failed to load OpenSim model: {exc}")
+            return {"CANCELLED"}
+
+        # Replace any previous import so reloads do not pile up duplicates.
+        old = bpy.data.collections.get(OPENSIM_COLLECTION_NAME)
+        if old is not None:
+            for obj in list(old.objects):
+                bpy.data.objects.remove(obj, do_unlink=True)
+            bpy.data.collections.remove(old)
+
+        collection = bpy.data.collections.new(OPENSIM_COLLECTION_NAME)
+        context.scene.collection.children.link(collection)
+
+        conversion = mathutils.Matrix(Y_UP_TO_Z_UP.tolist())
+        n_segments = 0
+        for body in model.bodies:
+            body_world = world.get(body.name)
+            if body_world is None:
+                continue
+            for geom in body.geometries:
+                resolved = resolve_geometry_file(geom.mesh_file, geometry_dir)
+                if resolved is None:
+                    continue  # body/geometry with no available file: skip silently
+
+                local_matrix = geometry_world_matrix(body_world, geom.scale_factors)
+                final = conversion @ mathutils.Matrix(local_matrix.tolist())
+
+                bpy.ops.wm.stl_import(filepath=str(resolved))
+                for obj in context.selected_objects:
+                    for parent in list(obj.users_collection):
+                        parent.objects.unlink(obj)
+                    collection.objects.link(obj)
+                    obj.matrix_world = final
+                n_segments += 1
+
+        self.report({"INFO"}, f"Loaded OpenSim model: {n_segments} segments")
+        return {"FINISHED"}
+
+
 class MESH2MARKER_PT_panel(Panel):
     bl_label = "Mesh2Marker"
     bl_idname = "MESH2MARKER_PT_panel"
@@ -101,13 +191,25 @@ class MESH2MARKER_PT_panel(Panel):
     def draw(self, context):
         layout = self.layout
         props = context.scene.mesh2marker
-        layout.prop(props, "npz_path")
-        layout.operator(MESH2MARKER_OT_load_mhr.bl_idname, icon="MESH_DATA")
+
+        col = layout.column(align=True)
+        col.label(text="MHR mesh")
+        col.prop(props, "npz_path")
+        col.operator(MESH2MARKER_OT_load_mhr.bl_idname, icon="MESH_DATA")
+
+        layout.separator()
+
+        col = layout.column(align=True)
+        col.label(text="OpenSim model")
+        col.prop(props, "osim_path")
+        col.prop(props, "geometry_dir")
+        col.operator(MESH2MARKER_OT_load_opensim.bl_idname, icon="ARMATURE_DATA")
 
 
 _CLASSES = (
     Mesh2MarkerProperties,
     MESH2MARKER_OT_load_mhr,
+    MESH2MARKER_OT_load_opensim,
     MESH2MARKER_PT_panel,
 )
 
