@@ -15,13 +15,36 @@ import importlib.util
 import sys
 from pathlib import Path
 
+# In a source checkout the core lives in a sibling core/src (dev mode); in a
+# packaged release it is bundled as a wheel and this directory does not exist.
+_CORE_SRC = Path(__file__).resolve().parent.parent / "core" / "src"
+_DEV_MODE = _CORE_SRC.is_dir()
+
 
 def _ensure_core_on_path() -> None:
     if importlib.util.find_spec("mesh2marker") is not None:
         return
-    core_src = Path(__file__).resolve().parent.parent / "core" / "src"
-    if core_src.is_dir():
-        sys.path.insert(0, str(core_src))
+    if _CORE_SRC.is_dir():
+        sys.path.insert(0, str(_CORE_SRC))
+
+
+def _reload_core() -> None:
+    """In dev mode, drop cached `mesh2marker` modules so live edits take effect.
+
+    Blender keeps imported modules in sys.modules for the whole session, so a
+    core source edit would otherwise stay invisible until Blender restarts. This
+    is a no-op for a packaged (wheel) install.
+    """
+    if not _DEV_MODE:
+        return
+    stale = [
+        name
+        for name in list(sys.modules)
+        if name == "mesh2marker" or name.startswith("mesh2marker.")
+    ]
+    for name in stale:
+        del sys.modules[name]
+    importlib.invalidate_caches()
 
 
 _ensure_core_on_path()
@@ -74,6 +97,7 @@ class MESH2MARKER_OT_load_mhr(Operator):
         path = bpy.path.abspath(raw_path)
 
         # Core does all the parsing/validation; the bpy layer stays thin.
+        _reload_core()
         from mesh2marker.mhr import load_mhr_npz
 
         try:
@@ -130,6 +154,7 @@ class MESH2MARKER_OT_load_opensim(Operator):
             return {"CANCELLED"}
 
         # All parsing, kinematics, path resolution and matrices come from the core.
+        _reload_core()
         from mesh2marker.geometry import (
             Y_UP_TO_Z_UP,
             geometry_world_matrix,
