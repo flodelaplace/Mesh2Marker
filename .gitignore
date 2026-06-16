@@ -29,3 +29,4 @@ htmlcov/
 # OS / Windows ADS artifacts
 .DS_Store
 *:Zone.Identifier
+/local_models/

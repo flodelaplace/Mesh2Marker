@@ -1,0 +1,150 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<OpenSimDocument Version="40000">
+	<Model name="minimal">
+		<Ground name="ground">
+			<FrameGeometry name="frame_geometry">
+				<socket_frame>..</socket_frame>
+			</FrameGeometry>
+		</Ground>
+		<BodySet>
+			<objects>
+				<Body name="pelvis">
+					<!-- FrameGeometry must be ignored: it carries no mesh_file. -->
+					<FrameGeometry name="frame_geometry">
+						<socket_frame>..</socket_frame>
+					</FrameGeometry>
+					<attached_geometry>
+						<Mesh name="pelvis_geom">
+							<socket_frame>..</socket_frame>
+							<mesh_file>sacrum.vtp</mesh_file>
+							<scale_factors>1 1 1</scale_factors>
+						</Mesh>
+					</attached_geometry>
+					<!-- Noise: a wrap object living inside the body. -->
+					<WrapObjectSet>
+						<objects>
+							<WrapCylinder name="pelvis_wrap">
+								<socket_frame>/bodyset/pelvis</socket_frame>
+								<radius>0.04</radius>
+							</WrapCylinder>
+						</objects>
+					</WrapObjectSet>
+				</Body>
+				<Body name="femur_r">
+					<FrameGeometry name="frame_geometry">
+						<socket_frame>..</socket_frame>
+					</FrameGeometry>
+					<!-- A body may carry several meshes. -->
+					<attached_geometry>
+						<Mesh name="femur_r_geom">
+							<mesh_file>femur_r.vtp</mesh_file>
+							<scale_factors>1 1 1</scale_factors>
+						</Mesh>
+						<Mesh name="femur_r_geom_2">
+							<mesh_file>femur_cap_r.vtp</mesh_file>
+							<scale_factors>1.1 1.0 0.9</scale_factors>
+						</Mesh>
+					</attached_geometry>
+				</Body>
+				<Body name="tibia_r">
+					<attached_geometry>
+						<Mesh name="tibia_r_geom">
+							<mesh_file>tibia_r.vtp</mesh_file>
+							<scale_factors>1 1 1</scale_factors>
+						</Mesh>
+					</attached_geometry>
+				</Body>
+			</objects>
+		</BodySet>
+		<JointSet>
+			<objects>
+				<!-- Bare offset-frame names in the sockets. -->
+				<CustomJoint name="ground_pelvis">
+					<socket_parent_frame>ground_offset</socket_parent_frame>
+					<socket_child_frame>pelvis_offset</socket_child_frame>
+					<coordinates>
+						<Coordinate name="pelvis_tilt" />
+						<Coordinate name="pelvis_tx" />
+						<Coordinate name="pelvis_ty" />
+					</coordinates>
+					<frames>
+						<PhysicalOffsetFrame name="ground_offset">
+							<socket_parent>/ground</socket_parent>
+							<translation>0 0 0</translation>
+							<orientation>0 0 0</orientation>
+						</PhysicalOffsetFrame>
+						<PhysicalOffsetFrame name="pelvis_offset">
+							<socket_parent>/bodyset/pelvis</socket_parent>
+							<translation>0 0 0</translation>
+							<orientation>0 0 0</orientation>
+						</PhysicalOffsetFrame>
+					</frames>
+				</CustomJoint>
+				<!-- Path-form sockets: the parser must take the last segment. -->
+				<CustomJoint name="hip_r">
+					<socket_parent_frame>/jointset/hip_r/hip_pelvis_offset</socket_parent_frame>
+					<socket_child_frame>/jointset/hip_r/femur_r_offset</socket_child_frame>
+					<coordinates>
+						<Coordinate name="hip_flexion_r" />
+						<Coordinate name="hip_adduction_r" />
+						<Coordinate name="hip_rotation_r" />
+					</coordinates>
+					<frames>
+						<PhysicalOffsetFrame name="hip_pelvis_offset">
+							<socket_parent>/bodyset/pelvis</socket_parent>
+							<translation>-0.07 -0.06 0.08</translation>
+							<orientation>0 0 0</orientation>
+						</PhysicalOffsetFrame>
+						<PhysicalOffsetFrame name="femur_r_offset">
+							<socket_parent>/bodyset/femur_r</socket_parent>
+							<translation>0 0 0</translation>
+							<orientation>0 0 0</orientation>
+						</PhysicalOffsetFrame>
+					</frames>
+				</CustomJoint>
+			</objects>
+		</JointSet>
+		<MarkerSet>
+			<objects>
+				<Marker name="RASIS">
+					<socket_parent_frame>/bodyset/pelvis</socket_parent_frame>
+					<location>0.01 -0.02 0.03</location>
+				</Marker>
+				<Marker name="RKNE">
+					<socket_parent_frame>/bodyset/femur_r</socket_parent_frame>
+					<location>0 -0.4 0.05</location>
+				</Marker>
+			</objects>
+		</MarkerSet>
+		<!-- NOISE: a tiny ForceSet whose muscle path points carry their own
+		     socket_parent_frame tags. A global tag search would wrongly pick
+		     these up; strict per-set scoping must ignore them entirely. -->
+		<ForceSet>
+			<objects>
+				<Thelen2003Muscle name="soleus_r">
+					<GeometryPath name="soleus_r_path">
+						<PathPointSet>
+							<objects>
+								<PathPoint name="soleus_r-P1">
+									<socket_parent_frame>/bodyset/tibia_r</socket_parent_frame>
+									<location>0 0 0</location>
+								</PathPoint>
+								<PathPoint name="soleus_r-P2">
+									<socket_parent_frame>/bodyset/femur_r</socket_parent_frame>
+									<location>0 0 0</location>
+								</PathPoint>
+							</objects>
+						</PathPointSet>
+						<PathWrapSet>
+							<objects>
+								<PathWrap name="wrap_soleus">
+									<wrap_object>pelvis_wrap</wrap_object>
+								</PathWrap>
+							</objects>
+						</PathWrapSet>
+					</GeometryPath>
+				</Thelen2003Muscle>
+			</objects>
+		</ForceSet>
+	</Model>
+</OpenSimDocument>
