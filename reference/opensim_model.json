@@ -1,0 +1,732 @@
+{
+  "schema_note": "Frozen reference snapshot of the production OpenSim model. Verbatim strings, no case normalization. Shared contract with the Mesh2Sim pipeline.",
+  "model_identity": {
+    "slug": "Pose2Sim_Wholebody",
+    "model_name_verbatim": "Pose2Sim_WithMusclesAndConstraints",
+    "opensim_document_version": "40000",
+    "derived_family": "Full-body Pose2Sim model (Pagnon et al. 2021), adapted from Beaucage-Gauvreau et al. with Rajagopal et al. knee angles. Not stock Rajagopal2016, not Lai-Uhlrich.",
+    "credits_verbatim": "Full-body model adapted from Beaucage-Gauvreau et al., with Rajagopal et al. knee angles. Contact spheres and Muscles included. Free pelvis translation, added ball joint between head and torso, locked arm pronation/supination, clamped hip flexion to 150° instead of 120°, hip adduction -60° instead of -50°, hip rotation -70° instead of -40°, knee 155° instead of 120°. Clamped shoulder DOFs: arm_flex [-60°, 180°], arm_add [-120°, 90°], arm_rot [-90°, 90°] to prevent IK arm lock-up.",
+    "publications_verbatim": "Pagnon, D., Domalain, M., Reveret, L. (2021). Pose2Sim: An End-to-End Workflow for 3D Markerless Sports Kinematics—Part 1: Robustness. Sensors, 21(19), 6530."
+  },
+  "units_and_axes": {
+    "length_units": "meters",
+    "force_units": "N",
+    "gravity": "0 -9.8066499999999994 0",
+    "axis_convention": "OpenSim standard: right-handed, Y-up (gravity along -Y confirms vertical = Y)"
+  },
+  "bodies": [
+    "pelvis",
+    "sacrum",
+    "femur_r",
+    "patella_r",
+    "tibia_r",
+    "talus_r",
+    "calcn_r",
+    "toes_r",
+    "femur_l",
+    "patella_l",
+    "tibia_l",
+    "talus_l",
+    "calcn_l",
+    "toes_l",
+    "lumbar5",
+    "lumbar4",
+    "lumbar3",
+    "lumbar2",
+    "lumbar1",
+    "torso",
+    "head",
+    "Abdomen",
+    "humerus_r",
+    "ulna_r",
+    "radius_r",
+    "hand_r",
+    "humerus_l",
+    "ulna_l",
+    "radius_l",
+    "hand_l"
+  ],
+  "coordinates": [
+    {
+      "name": "pelvis_tilt",
+      "joint": "ground_pelvis",
+      "joint_type": "CustomJoint"
+    },
+    {
+      "name": "pelvis_list",
+      "joint": "ground_pelvis",
+      "joint_type": "CustomJoint"
+    },
+    {
+      "name": "pelvis_rotation",
+      "joint": "ground_pelvis",
+      "joint_type": "CustomJoint"
+    },
+    {
+      "name": "pelvis_tx",
+      "joint": "ground_pelvis",
+      "joint_type": "CustomJoint"
+    },
+    {
+      "name": "pelvis_ty",
+      "joint": "ground_pelvis",
+      "joint_type": "CustomJoint"
+    },
+    {
+      "name": "pelvis_tz",
+      "joint": "ground_pelvis",
+      "joint_type": "CustomJoint"
+    },
+    {
+      "name": "hip_flexion_r",
+      "joint": "hip_r",
+      "joint_type": "CustomJoint"
+    },
+    {
+      "name": "hip_adduction_r",
+      "joint": "hip_r",
+      "joint_type": "CustomJoint"
+    },
+    {
+      "name": "hip_rotation_r",
+      "joint": "hip_r",
+      "joint_type": "CustomJoint"
+    },
+    {
+      "name": "knee_angle_r",
+      "joint": "walker_knee_r",
+      "joint_type": "CustomJoint"
+    },
+    {
+      "name": "knee_angle_r_beta",
+      "joint": "patellofemoral_r",
+      "joint_type": "CustomJoint"
+    },
+    {
+      "name": "ankle_angle_r",
+      "joint": "ankle_r",
+      "joint_type": "CustomJoint"
+    },
+    {
+      "name": "subtalar_angle_r",
+      "joint": "subtalar_r",
+      "joint_type": "PinJoint"
+    },
+    {
+      "name": "mtp_angle_r",
+      "joint": "mtp_r",
+      "joint_type": "PinJoint"
+    },
+    {
+      "name": "hip_flexion_l",
+      "joint": "hip_l",
+      "joint_type": "CustomJoint"
+    },
+    {
+      "name": "hip_adduction_l",
+      "joint": "hip_l",
+      "joint_type": "CustomJoint"
+    },
+    {
+      "name": "hip_rotation_l",
+      "joint": "hip_l",
+      "joint_type": "CustomJoint"
+    },
+    {
+      "name": "knee_angle_l",
+      "joint": "walker_knee_l",
+      "joint_type": "CustomJoint"
+    },
+    {
+      "name": "knee_angle_l_beta",
+      "joint": "patellofemoral_l",
+      "joint_type": "CustomJoint"
+    },
+    {
+      "name": "ankle_angle_l",
+      "joint": "ankle_l",
+      "joint_type": "CustomJoint"
+    },
+    {
+      "name": "subtalar_angle_l",
+      "joint": "subtalar_l",
+      "joint_type": "PinJoint"
+    },
+    {
+      "name": "mtp_angle_l",
+      "joint": "mtp_l",
+      "joint_type": "PinJoint"
+    },
+    {
+      "name": "lumbar_extension",
+      "joint": "L5_S1_IVDjnt",
+      "joint_type": "CustomJoint"
+    },
+    {
+      "name": "lumbar_bending",
+      "joint": "L5_S1_IVDjnt",
+      "joint_type": "CustomJoint"
+    },
+    {
+      "name": "lumbar_rotation",
+      "joint": "L5_S1_IVDjnt",
+      "joint_type": "CustomJoint"
+    },
+    {
+      "name": "L4_L5_Flex_Ext",
+      "joint": "L4_L5_IVDjnt",
+      "joint_type": "CustomJoint"
+    },
+    {
+      "name": "L4_L5_Lat_Bending",
+      "joint": "L4_L5_IVDjnt",
+      "joint_type": "CustomJoint"
+    },
+    {
+      "name": "L4_L5_axial_rotation",
+      "joint": "L4_L5_IVDjnt",
+      "joint_type": "CustomJoint"
+    },
+    {
+      "name": "L3_L4_Flex_Ext",
+      "joint": "L3_L4_IVDjnt",
+      "joint_type": "CustomJoint"
+    },
+    {
+      "name": "L3_L4_Lat_Bending",
+      "joint": "L3_L4_IVDjnt",
+      "joint_type": "CustomJoint"
+    },
+    {
+      "name": "L3_L4_axial_rotation",
+      "joint": "L3_L4_IVDjnt",
+      "joint_type": "CustomJoint"
+    },
+    {
+      "name": "L2_L3_Flex_Ext",
+      "joint": "L2_L3_IVD_jnt",
+      "joint_type": "CustomJoint"
+    },
+    {
+      "name": "L2_L3_Lat_Bending",
+      "joint": "L2_L3_IVD_jnt",
+      "joint_type": "CustomJoint"
+    },
+    {
+      "name": "L2_L3_axial_rotation",
+      "joint": "L2_L3_IVD_jnt",
+      "joint_type": "CustomJoint"
+    },
+    {
+      "name": "L1_L2_Flex_Ext",
+      "joint": "L1_L2_IVD_jnt",
+      "joint_type": "CustomJoint"
+    },
+    {
+      "name": "L1_L2_Lat_Bending",
+      "joint": "L1_L2_IVD_jnt",
+      "joint_type": "CustomJoint"
+    },
+    {
+      "name": "L1_L2_axial_rotation",
+      "joint": "L1_L2_IVD_jnt",
+      "joint_type": "CustomJoint"
+    },
+    {
+      "name": "L1_T12_Flex_Ext",
+      "joint": "L1_T12_IVD_jnt",
+      "joint_type": "CustomJoint"
+    },
+    {
+      "name": "L1_T12_Lat_Bending",
+      "joint": "L1_T12_IVD_jnt",
+      "joint_type": "CustomJoint"
+    },
+    {
+      "name": "L1_T12_axial_rotation",
+      "joint": "L1_T12_IVD_jnt",
+      "joint_type": "CustomJoint"
+    },
+    {
+      "name": "Abs_r3",
+      "joint": "Abdjnt",
+      "joint_type": "CustomJoint"
+    },
+    {
+      "name": "Abs_r2",
+      "joint": "Abdjnt",
+      "joint_type": "CustomJoint"
+    },
+    {
+      "name": "Abs_r1",
+      "joint": "Abdjnt",
+      "joint_type": "CustomJoint"
+    },
+    {
+      "name": "Abs_t1",
+      "joint": "Abdjnt",
+      "joint_type": "CustomJoint"
+    },
+    {
+      "name": "Abs_t2",
+      "joint": "Abdjnt",
+      "joint_type": "CustomJoint"
+    },
+    {
+      "name": "neck_flexion",
+      "joint": "head_torso",
+      "joint_type": "CustomJoint"
+    },
+    {
+      "name": "neck_bending",
+      "joint": "head_torso",
+      "joint_type": "CustomJoint"
+    },
+    {
+      "name": "neck_rotation",
+      "joint": "head_torso",
+      "joint_type": "CustomJoint"
+    },
+    {
+      "name": "arm_flex_r",
+      "joint": "acromial_r",
+      "joint_type": "CustomJoint"
+    },
+    {
+      "name": "arm_add_r",
+      "joint": "acromial_r",
+      "joint_type": "CustomJoint"
+    },
+    {
+      "name": "arm_rot_r",
+      "joint": "acromial_r",
+      "joint_type": "CustomJoint"
+    },
+    {
+      "name": "elbow_flex_r",
+      "joint": "elbow_r",
+      "joint_type": "PinJoint"
+    },
+    {
+      "name": "pro_sup_r",
+      "joint": "radioulnar_r",
+      "joint_type": "PinJoint"
+    },
+    {
+      "name": "wrist_flex_r",
+      "joint": "radius_hand_r",
+      "joint_type": "UniversalJoint"
+    },
+    {
+      "name": "wrist_dev_r",
+      "joint": "radius_hand_r",
+      "joint_type": "UniversalJoint"
+    },
+    {
+      "name": "arm_flex_l",
+      "joint": "acromial_l",
+      "joint_type": "CustomJoint"
+    },
+    {
+      "name": "arm_add_l",
+      "joint": "acromial_l",
+      "joint_type": "CustomJoint"
+    },
+    {
+      "name": "arm_rot_l",
+      "joint": "acromial_l",
+      "joint_type": "CustomJoint"
+    },
+    {
+      "name": "elbow_flex_l",
+      "joint": "elbow_l",
+      "joint_type": "PinJoint"
+    },
+    {
+      "name": "pro_sup_l",
+      "joint": "radioulnar_l",
+      "joint_type": "PinJoint"
+    },
+    {
+      "name": "wrist_flex_l",
+      "joint": "radius_hand_l",
+      "joint_type": "UniversalJoint"
+    },
+    {
+      "name": "wrist_dev_l",
+      "joint": "radius_hand_l",
+      "joint_type": "UniversalJoint"
+    }
+  ],
+  "markerset": {
+    "status": "fully populated; all markers attached directly to a body; all parent_body present in bodies",
+    "count": 73,
+    "markers": [
+      {
+        "name": "Nose",
+        "parent_body": "head",
+        "location": "0.116266 0.0126096 0.000152885"
+      },
+      {
+        "name": "LEye",
+        "parent_body": "head",
+        "location": "0.0781497 0.0467611 -0.0311069"
+      },
+      {
+        "name": "REye",
+        "parent_body": "head",
+        "location": "0.0781497 0.0467611 0.0311069"
+      },
+      {
+        "name": "LEar",
+        "parent_body": "head",
+        "location": "-0.02 0.025 -0.06"
+      },
+      {
+        "name": "REar",
+        "parent_body": "head",
+        "location": "-0.02 0.025 0.06"
+      },
+      {
+        "name": "HTOP",
+        "parent_body": "head",
+        "location": "0.0 0.15 0.0"
+      },
+      {
+        "name": "c_spine0",
+        "parent_body": "lumbar5",
+        "location": "0.0 0.0 0.0"
+      },
+      {
+        "name": "c_spine1",
+        "parent_body": "lumbar3",
+        "location": "0.0 0.0 0.0"
+      },
+      {
+        "name": "c_spine2",
+        "parent_body": "torso",
+        "location": "-0.012 0.175 0.0"
+      },
+      {
+        "name": "c_spine3",
+        "parent_body": "torso",
+        "location": "-0.012 0.336 0.0"
+      },
+      {
+        "name": "c_neck",
+        "parent_body": "torso",
+        "location": "-0.013 0.417 0.0"
+      },
+      {
+        "name": "c_head",
+        "parent_body": "head",
+        "location": "0.010 0.000 0.0"
+      },
+      {
+        "name": "RACR",
+        "parent_body": "torso",
+        "location": "-0.0104668 0.413951 0.145"
+      },
+      {
+        "name": "LACR",
+        "parent_body": "torso",
+        "location": "-0.0104668 0.413951 -0.145"
+      },
+      {
+        "name": "C7",
+        "parent_body": "torso",
+        "location": "-0.085 0.435 0.00165426"
+      },
+      {
+        "name": "RCLAV",
+        "parent_body": "torso",
+        "location": "0.04 0.38 0.017"
+      },
+      {
+        "name": "LCLAV",
+        "parent_body": "torso",
+        "location": "0.04 0.38 -0.017"
+      },
+      {
+        "name": "RLEL",
+        "parent_body": "humerus_r",
+        "location": "0.0351089 -0.262069 0.0207564"
+      },
+      {
+        "name": "RMEL",
+        "parent_body": "humerus_r",
+        "location": "-0.0034847 -0.2661645 -0.05532985"
+      },
+      {
+        "name": "RFAradius",
+        "parent_body": "radius_r",
+        "location": "0.0005 -0.229515 0.05"
+      },
+      {
+        "name": "RFAulna",
+        "parent_body": "radius_r",
+        "location": "-0.0369589 -0.217874 -0.01203205"
+      },
+      {
+        "name": "LLEL",
+        "parent_body": "humerus_l",
+        "location": "0.0351089 -0.262069 -0.0207564"
+      },
+      {
+        "name": "LMEL",
+        "parent_body": "humerus_l",
+        "location": "-0.0034847 -0.2661645 0.05532985"
+      },
+      {
+        "name": "LFAradius",
+        "parent_body": "radius_l",
+        "location": "0.0005 -0.229515 -0.05"
+      },
+      {
+        "name": "LFAulna",
+        "parent_body": "radius_l",
+        "location": "-0.0369589 -0.217874 0.01203205"
+      },
+      {
+        "name": "RASI",
+        "parent_body": "pelvis",
+        "location": "0.00953047 0.0180816 0.128464"
+      },
+      {
+        "name": "LASI",
+        "parent_body": "pelvis",
+        "location": "0.00953047 0.0180816 -0.128464"
+      },
+      {
+        "name": "RPSI",
+        "parent_body": "pelvis",
+        "location": "-0.1816615 0.01556285 0.06023525"
+      },
+      {
+        "name": "LPSI",
+        "parent_body": "pelvis",
+        "location": "-0.1816615 0.01556285 -0.06023525"
+      },
+      {
+        "name": "RLFC",
+        "parent_body": "femur_r",
+        "location": "0.00611445 -0.404 0.05"
+      },
+      {
+        "name": "RMFC",
+        "parent_body": "femur_r",
+        "location": "-0.001840405 -0.404 -0.05"
+      },
+      {
+        "name": "RLMAL",
+        "parent_body": "tibia_r",
+        "location": "-0.02198015 -0.4031615 0.053"
+      },
+      {
+        "name": "RMMAL",
+        "parent_body": "tibia_r",
+        "location": "-0.002156385 -0.40386 -0.038"
+      },
+      {
+        "name": "RCAL",
+        "parent_body": "calcn_r",
+        "location": "0.009376105 0.008319485 -0.005"
+      },
+      {
+        "name": "RTOE",
+        "parent_body": "calcn_r",
+        "location": "0.224528 0.0193934 -0.00638179"
+      },
+      {
+        "name": "RMT5",
+        "parent_body": "calcn_r",
+        "location": "0.1815615 0.00396267 0.04938155"
+      },
+      {
+        "name": "LLFC",
+        "parent_body": "femur_l",
+        "location": "0.00611445 -0.404 -0.05"
+      },
+      {
+        "name": "LMFC",
+        "parent_body": "femur_l",
+        "location": "-0.001840405 -0.404 0.05"
+      },
+      {
+        "name": "LLMAL",
+        "parent_body": "tibia_l",
+        "location": "-0.02198015 -0.4031615 -0.053"
+      },
+      {
+        "name": "LMMAL",
+        "parent_body": "tibia_l",
+        "location": "-0.002156385 -0.40386 0.038"
+      },
+      {
+        "name": "LCAL",
+        "parent_body": "calcn_l",
+        "location": "0.009376105 0.008319485 0.005"
+      },
+      {
+        "name": "LTOE",
+        "parent_body": "calcn_l",
+        "location": "0.224528 0.0193934 0.00638179"
+      },
+      {
+        "name": "LMT5",
+        "parent_body": "calcn_l",
+        "location": "0.1815615 0.00396267 -0.04938155"
+      },
+      {
+        "name": "RWrist_hand",
+        "parent_body": "hand_r",
+        "location": "0 0 0"
+      },
+      {
+        "name": "RThumb",
+        "parent_body": "hand_r",
+        "location": "0.015900598 -0.053530075 0.045219602"
+      },
+      {
+        "name": "RIndex",
+        "parent_body": "hand_r",
+        "location": "0.0031182915 -0.082610896 0.01602928"
+      },
+      {
+        "name": "RPinky",
+        "parent_body": "hand_r",
+        "location": "0.0031131191 -0.073810309 -0.0325446"
+      },
+      {
+        "name": "RIndexTip",
+        "parent_body": "hand_r",
+        "location": "0.0481707 -0.1400166 0.0104838"
+      },
+      {
+        "name": "RPinkyTip",
+        "parent_body": "hand_r",
+        "location": "0.0410682 -0.1172673 -0.0422992"
+      },
+      {
+        "name": "LWrist_hand",
+        "parent_body": "hand_l",
+        "location": "0 0 0"
+      },
+      {
+        "name": "LThumb",
+        "parent_body": "hand_l",
+        "location": "0.015900598 -0.053530075 -0.045219602"
+      },
+      {
+        "name": "LIndex",
+        "parent_body": "hand_l",
+        "location": "0.0031182915 -0.082610896 -0.01602928"
+      },
+      {
+        "name": "LPinky",
+        "parent_body": "hand_l",
+        "location": "0.0031131191 -0.073810309 0.0325446"
+      },
+      {
+        "name": "LIndexTip",
+        "parent_body": "hand_l",
+        "location": "0.0481707 -0.1400166 -0.0104838"
+      },
+      {
+        "name": "LPinkyTip",
+        "parent_body": "hand_l",
+        "location": "0.0410682 -0.1172673 0.0422992"
+      },
+      {
+        "name": "RHTO",
+        "parent_body": "humerus_r",
+        "location": "0.002157417 -0.12051736 0.033761274"
+      },
+      {
+        "name": "RHAP",
+        "parent_body": "humerus_r",
+        "location": "0.011779918 -0.11132876 -0.030783325"
+      },
+      {
+        "name": "RHBA",
+        "parent_body": "humerus_r",
+        "location": "-0.041458686 -0.17644604 -0.014162101"
+      },
+      {
+        "name": "RHFR",
+        "parent_body": "humerus_r",
+        "location": "0.033821068 -0.17501605 -0.011584559"
+      },
+      {
+        "name": "RFRM",
+        "parent_body": "ulna_r",
+        "location": "-0.051789224 -0.090936991 0.01463295"
+      },
+      {
+        "name": "LHTO",
+        "parent_body": "humerus_l",
+        "location": "0.002157417 -0.12051736 -0.033761274"
+      },
+      {
+        "name": "LHAP",
+        "parent_body": "humerus_l",
+        "location": "0.011779918 -0.11132876 0.030783325"
+      },
+      {
+        "name": "LHBA",
+        "parent_body": "humerus_l",
+        "location": "-0.041458686 -0.17644604 0.014162101"
+      },
+      {
+        "name": "LHFR",
+        "parent_body": "humerus_l",
+        "location": "0.033821068 -0.17501605 0.011584559"
+      },
+      {
+        "name": "LFRM",
+        "parent_body": "ulna_l",
+        "location": "-0.051789224 -0.090936991 -0.01463295"
+      },
+      {
+        "name": "RFLT",
+        "parent_body": "femur_r",
+        "location": "-0.0061524444 -0.15742619 0.088178431"
+      },
+      {
+        "name": "RFLB",
+        "parent_body": "femur_r",
+        "location": "0.0036927313 -0.31881789 0.055007017"
+      },
+      {
+        "name": "RSHN",
+        "parent_body": "tibia_r",
+        "location": "-0.03579332 -0.15273326 0.066271004"
+      },
+      {
+        "name": "RTIB",
+        "parent_body": "tibia_r",
+        "location": "0.029727614 -0.20862907 0.01266402"
+      },
+      {
+        "name": "LFLT",
+        "parent_body": "femur_l",
+        "location": "-0.0061524444 -0.15742619 -0.088178431"
+      },
+      {
+        "name": "LFLB",
+        "parent_body": "femur_l",
+        "location": "0.0036927313 -0.31881789 -0.055007017"
+      },
+      {
+        "name": "LSHN",
+        "parent_body": "tibia_l",
+        "location": "-0.03579332 -0.15273326 -0.066271004"
+      },
+      {
+        "name": "LTIB",
+        "parent_body": "tibia_l",
+        "location": "0.029727614 -0.20862907 -0.01266402"
+      }
+    ]
+  }
+}

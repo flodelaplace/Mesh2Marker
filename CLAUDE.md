@@ -49,10 +49,23 @@ Target Python 3.11 (Blender 4.x embedded interpreter). The core must stay 3.11-c
 runs both inside Blender and in Linux CI.
 
 ## Integration with Mesh2Sim
-No code dependency. The link is the correspondence file (JSON). The marker-name vocabulary and
-segment names must align with the pipeline's shared contract (`mesh2sim.contracts`), based on the
-standard mocap marker set (OpenCap 43-marker reference) and OpenSim per-model segment names. If
-that package cannot be installed in Blender's Python, mirror the schema but keep it aligned.
+No code dependency. The link is the correspondence file (JSON). Three alignment points with the
+pipeline's shared contract (`mesh2sim.contracts`):
+
+- Stable model slug = `"Pose2Sim_Wholebody"`. The verbatim model name
+  `"Pose2Sim_WithMusclesAndConstraints"` is kept as metadata only. The frozen snapshot of the
+  production model is `reference/opensim_model.json` (regenerable via
+  `scripts/extract_reference_model.py`).
+- The 73 marker names are the shared landmark vocabulary; correspondences MUST use these exact
+  names, case-sensitive. Gotchas: `"Abdomen"` is capitalized, `"RWrist_hand"` / `"LWrist_hand"`
+  use an underscore, `"RFAradius"` / `"RFAulna"` are both on body `radius_r` (mirror on
+  `radius_l`).
+- The exported correspondence file MUST conform to the `CorrespondenceMap` schema defined in the
+  pipeline's `mesh2sim.contracts` (`schema_version`, `mhr_topology_id`, `opensim_model`,
+  `marker_set`, `frame_alignment`{`rotation`, `translation`, `scale`}, `markers`[`name`,
+  `mhr_vertices`, `opensim_body`, `local_offset`, `fixed`, `synthpose_index`]). When
+  `mesh2sim.contracts` is available it will be installed in Blender's Python to validate exports
+  against the shared schema.
 
 ## Conventions
 Meters. Right-handed Y-up frame (OpenSim convention). Local offsets expressed in the segment
