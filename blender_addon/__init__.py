@@ -206,6 +206,64 @@ class MESH2MARKER_OT_load_opensim(Operator):
         return {"FINISHED"}
 
 
+class MESH2MARKER_OT_align_mhr(Operator):
+    """Procrustes pre-align the loaded MHR body onto the OpenSim model."""
+
+    bl_idname = "mesh2marker.align_mhr"
+    bl_label = "Align MHR to OpenSim"
+    bl_description = (
+        "Procrustes-align the MHR keypoints onto the OpenSim joint centres and "
+        "place the MHR body accordingly"
+    )
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        props = context.scene.mesh2marker
+        npz_path = bpy.path.abspath(props.npz_path.strip()) if props.npz_path else ""
+        osim_path = bpy.path.abspath(props.osim_path.strip()) if props.osim_path else ""
+        if not npz_path:
+            self.report({"ERROR"}, "NPZ path is empty")
+            return {"CANCELLED"}
+        if not osim_path:
+            self.report({"ERROR"}, "OSIM path is empty")
+            return {"CANCELLED"}
+
+        obj = bpy.data.objects.get(MHR_OBJECT_NAME)
+        if obj is None:
+            self.report(
+                {"ERROR"}, f"{MHR_OBJECT_NAME!r} not found; load the MHR mesh first"
+            )
+            return {"CANCELLED"}
+
+        # All the computation (clouds, Procrustes, matrix) comes from the core.
+        _reload_core()
+        from mesh2marker.alignment import align_mhr_to_opensim, similarity_to_matrix
+        from mesh2marker.geometry import Y_UP_TO_Z_UP
+        from mesh2marker.mhr import load_mhr_npz
+        from mesh2marker.osim import parse_osim
+
+        try:
+            sample = load_mhr_npz(npz_path)
+            model = parse_osim(osim_path)
+            transform, residual, pairs = align_mhr_to_opensim(sample, model)
+        except (OSError, ValueError) as exc:
+            self.report({"ERROR"}, f"Alignment failed: {exc}")
+            return {"CANCELLED"}
+
+        # Compose the camera->OpenSim similarity, then the OpenSim Y-up -> Blender
+        # Z-up conversion (same global convention as the model display).
+        conversion = mathutils.Matrix(Y_UP_TO_Z_UP.tolist())
+        similarity = mathutils.Matrix(similarity_to_matrix(transform).tolist())
+        obj.matrix_world = conversion @ similarity
+
+        self.report(
+            {"INFO"},
+            f"Aligned MHR: {len(pairs)} pairs, scale {transform.scale:.3f}, "
+            f"residual {residual * 1000:.1f} mm",
+        )
+        return {"FINISHED"}
+
+
 class MESH2MARKER_PT_panel(Panel):
     bl_label = "Mesh2Marker"
     bl_idname = "MESH2MARKER_PT_panel"
@@ -230,11 +288,18 @@ class MESH2MARKER_PT_panel(Panel):
         col.prop(props, "geometry_dir")
         col.operator(MESH2MARKER_OT_load_opensim.bl_idname, icon="ARMATURE_DATA")
 
+        layout.separator()
+
+        col = layout.column(align=True)
+        col.label(text="Alignment")
+        col.operator(MESH2MARKER_OT_align_mhr.bl_idname, icon="SNAP_ON")
+
 
 _CLASSES = (
     Mesh2MarkerProperties,
     MESH2MARKER_OT_load_mhr,
     MESH2MARKER_OT_load_opensim,
+    MESH2MARKER_OT_align_mhr,
     MESH2MARKER_PT_panel,
 )
 
