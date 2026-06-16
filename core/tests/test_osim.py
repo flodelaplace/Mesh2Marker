@@ -1,5 +1,6 @@
 """Parse the committed minimal fixture; optionally parse the real local model."""
 
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import pytest
@@ -28,8 +29,10 @@ def test_bodies(model):
 def test_geometries(model):
     by_name = {b.name: b for b in model.bodies}
 
-    # FrameGeometry ignored: pelvis exposes exactly its one attached mesh.
-    assert [g.mesh_file for g in by_name["pelvis"].geometries] == ["sacrum.vtp"]
+    # pelvis: one direct mesh (identity offset) + one components mesh (offset).
+    # FrameGeometry and the mesh-less PhysicalOffsetFrame are ignored.
+    pelvis = by_name["pelvis"]
+    assert [g.mesh_file for g in pelvis.geometries] == ["sacrum.vtp", "ilium.vtp"]
 
     # A body can carry several meshes.
     femur = by_name["femur_r"]
@@ -41,6 +44,21 @@ def test_geometries(model):
     assert femur.geometries[1].scale_factors == [1.1, 1.0, 0.9]
 
     assert [g.mesh_file for g in by_name["tibia_r"].geometries] == ["tibia_r.vtp"]
+
+
+def test_components_geometry_local_offset(model):
+    by_name = {b.name: b for b in model.bodies}
+    pelvis = by_name["pelvis"]
+
+    direct = pelvis.geometries[0]  # sacrum.vtp, attached directly
+    assert direct.mesh_file == "sacrum.vtp"
+    assert direct.local_offset.translation == [0.0, 0.0, 0.0]
+    assert direct.local_offset.orientation == [0.0, 0.0, 0.0]
+
+    extra = pelvis.geometries[1]  # ilium.vtp, via a PhysicalOffsetFrame
+    assert extra.mesh_file == "ilium.vtp"
+    assert extra.local_offset.translation == [0.1, 0.2, 0.3]
+    assert extra.local_offset.orientation == [0.0, 0.0, 0.0]
 
 
 def test_joints_resolved(model):
@@ -92,3 +110,24 @@ def test_real_model():
         assert m.parent_body in body_names, (
             f"marker {m.name!r} -> unknown body {m.parent_body!r}"
         )
+
+
+@pytest.mark.skipif(
+    not REAL_MODEL.exists(), reason="real local model not present (CI / clean checkout)"
+)
+def test_real_model_components_geometry():
+    model = parse_osim(REAL_MODEL)
+    by_name = {b.name: b for b in model.bodies}
+
+    # torso geometry lives entirely in its <components> frames; it must now be seen.
+    assert len(by_name["torso"].geometries) > 0
+
+    total = sum(len(b.geometries) for b in model.bodies)
+
+    # "Before" = direct Body/attached_geometry meshes only (old parser behaviour).
+    root = ET.parse(REAL_MODEL).getroot().find("Model")
+    direct_only = sum(
+        len(b.findall("attached_geometry/Mesh"))
+        for b in root.findall("BodySet/objects/Body")
+    )
+    assert total > direct_only

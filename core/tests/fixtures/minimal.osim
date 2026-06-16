@@ -20,6 +20,34 @@
 							<scale_factors>1 1 1</scale_factors>
 						</Mesh>
 					</attached_geometry>
+					<!-- Geometry attached via the body's own components: a
+					     PhysicalOffsetFrame with its own mesh + local offset. -->
+					<components>
+						<PhysicalOffsetFrame name="pelvis_geom_frame_1">
+							<!-- FrameGeometry (axis viz) must be ignored. -->
+							<FrameGeometry name="frame_geometry">
+								<socket_frame>..</socket_frame>
+							</FrameGeometry>
+							<attached_geometry>
+								<Mesh name="pelvis_extra_geom">
+									<mesh_file>ilium.vtp</mesh_file>
+									<scale_factors>1 1 1</scale_factors>
+								</Mesh>
+							</attached_geometry>
+							<socket_parent>..</socket_parent>
+							<translation>0.1 0.2 0.3</translation>
+							<orientation>0 0 0</orientation>
+						</PhysicalOffsetFrame>
+						<!-- Frame without a Mesh: must be skipped. -->
+						<PhysicalOffsetFrame name="pelvis_no_mesh_frame">
+							<FrameGeometry name="frame_geometry">
+								<socket_frame>..</socket_frame>
+							</FrameGeometry>
+							<socket_parent>..</socket_parent>
+							<translation>0 0 0</translation>
+							<orientation>0 0 0</orientation>
+						</PhysicalOffsetFrame>
+					</components>
 					<!-- Noise: a wrap object living inside the body. -->
 					<WrapObjectSet>
 						<objects>

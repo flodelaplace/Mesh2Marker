@@ -166,7 +166,7 @@ class MESH2MARKER_OT_load_opensim(Operator):
                 if resolved is None:
                     continue  # body/geometry with no available file: skip silently
 
-                local_matrix = geometry_world_matrix(body_world, geom.scale_factors)
+                local_matrix = geometry_world_matrix(body_world, geom)
                 final = conversion @ mathutils.Matrix(local_matrix.tolist())
 
                 bpy.ops.wm.stl_import(filepath=str(resolved))

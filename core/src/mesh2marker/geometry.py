@@ -5,10 +5,12 @@ Pure core: stdlib + numpy only. No bpy. The bpy layer imports the resolved
 transform composition live here.
 
 The model references ``.vtp`` meshes, but on disk we ship ``.stl`` (loadable
-without vtk). Geometries live in the body's local frame and carry per-axis
-``scale_factors``; :func:`geometry_world_matrix` composes scale then the body world
-transform. :data:`Y_UP_TO_Z_UP` converts the whole OpenSim (Y-up) model to
-Blender's (Z-up) convention and is meant to be applied once, globally.
+without vtk). Geometries live in the body's local frame, carry per-axis
+``scale_factors`` and a ``local_offset`` (identity for a direct mesh, the
+PhysicalOffsetFrame offset for a components mesh); :func:`geometry_world_matrix`
+composes scale, then the local offset, then the body world transform.
+:data:`Y_UP_TO_Z_UP` converts the whole OpenSim (Y-up) model to Blender's (Z-up)
+convention and is meant to be applied once, globally.
 """
 
 from __future__ import annotations
@@ -17,7 +19,8 @@ from pathlib import Path
 
 import numpy as np
 
-from .kinematics import Transform
+from .kinematics import Transform, euler_xyz_to_matrix
+from .osim import OsimGeometry
 
 # Preference order when several on-disk formats exist for the same mesh stem.
 _GEOMETRY_EXTENSIONS = (".stl", ".obj")
@@ -78,17 +81,29 @@ def transform_to_matrix(transform: Transform) -> np.ndarray:
     return matrix
 
 
-def geometry_world_matrix(
-    world_body: Transform, scale_factors: list[float] | np.ndarray | None
-) -> np.ndarray:
-    """Full 4x4 placement of a geometry: ``world_body ∘ scale(scale_factors)``.
+def _offset_transform(offset) -> Transform:
+    translation = (
+        np.asarray(offset.translation, dtype=float)
+        if offset.translation
+        else np.zeros(3)
+    )
+    orientation = offset.orientation if offset.orientation else [0.0, 0.0, 0.0]
+    return Transform(euler_xyz_to_matrix(orientation), translation)
 
-    Order: a local geometry point ``p`` is first scaled (per axis, in the body's
-    local frame), then mapped by the body world transform. As a matrix product
-    ``M = world_body_4x4 @ scale_4x4`` and ``p_world = M @ [p; 1]``. An empty or
-    missing ``scale_factors`` defaults to unit scale; any other non-length-3 value
-    raises :class:`ValueError`.
+
+def geometry_world_matrix(world_body: Transform, geometry: OsimGeometry) -> np.ndarray:
+    """Full 4x4 placement of a geometry: ``world_body ∘ T(local_offset) ∘ scale``.
+
+    Order, innermost first: a local geometry point ``p`` is first scaled (per axis),
+    then placed by the geometry's local offset inside the body frame
+    (``T(local_offset)``, Euler XYZ + translation), then mapped by the body world
+    transform. As a matrix product
+    ``M = world_body_4x4 @ offset_4x4 @ scale_4x4`` and ``p_world = M @ [p; 1]``.
+    An identity offset reproduces the plain ``world_body ∘ scale`` placement. An
+    empty/missing ``scale_factors`` defaults to unit scale; any other non-length-3
+    value raises :class:`ValueError`.
     """
+    scale_factors = geometry.scale_factors
     if scale_factors is None or len(scale_factors) == 0:
         scale = np.ones(3)
     else:
@@ -98,4 +113,6 @@ def geometry_world_matrix(
                 f"scale_factors must have length 3, got {len(scale_factors)}"
             )
     scale_matrix = np.diag([scale[0], scale[1], scale[2], 1.0])
-    return transform_to_matrix(world_body) @ scale_matrix
+
+    placed = world_body.compose(_offset_transform(geometry.local_offset))
+    return transform_to_matrix(placed) @ scale_matrix

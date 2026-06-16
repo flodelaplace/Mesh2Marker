@@ -15,7 +15,7 @@ ignored entirely.
 from __future__ import annotations
 
 import xml.etree.ElementTree as ET
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 # --- helpers ---------------------------------------------------------------
@@ -61,22 +61,30 @@ def _strip_body_path(ref: str | None) -> str:
 
 
 @dataclass
+class OsimFrameOffset:
+    translation: list[float]
+    orientation: list[float]
+
+    @classmethod
+    def identity(cls) -> OsimFrameOffset:
+        return cls(translation=[0.0, 0.0, 0.0], orientation=[0.0, 0.0, 0.0])
+
+
+@dataclass
 class OsimGeometry:
     mesh_name: str
     mesh_file: str
     scale_factors: list[float]
+    # Local placement of the mesh inside the body frame. Identity for a direct
+    # Body/attached_geometry mesh; the PhysicalOffsetFrame offset when the mesh is
+    # attached via the body's <components>.
+    local_offset: OsimFrameOffset = field(default_factory=OsimFrameOffset.identity)
 
 
 @dataclass
 class OsimBody:
     name: str
     geometries: list[OsimGeometry]
-
-
-@dataclass
-class OsimFrameOffset:
-    translation: list[float]
-    orientation: list[float]
 
 
 @dataclass
@@ -115,6 +123,28 @@ class OsimModel:
 # --- per-set extraction ----------------------------------------------------
 
 
+def _parse_meshes(
+    attached_el: ET.Element | None, local_offset: OsimFrameOffset
+) -> list[OsimGeometry]:
+    """Extract the Mesh entries of an <attached_geometry> with a given local offset.
+
+    Only real <Mesh> elements are taken; <FrameGeometry> (axis viz) is ignored.
+    """
+    geometries: list[OsimGeometry] = []
+    if attached_el is None:
+        return geometries
+    for mesh_el in attached_el.findall("Mesh"):
+        geometries.append(
+            OsimGeometry(
+                mesh_name=mesh_el.get("name", ""),
+                mesh_file=(mesh_el.findtext("mesh_file") or "").strip(),
+                scale_factors=_floats(mesh_el.findtext("scale_factors")),
+                local_offset=local_offset,
+            )
+        )
+    return geometries
+
+
 def _parse_bodies(model_el: ET.Element) -> list[OsimBody]:
     bodies: list[OsimBody] = []
     objects = model_el.find("BodySet/objects")
@@ -122,17 +152,28 @@ def _parse_bodies(model_el: ET.Element) -> list[OsimBody]:
         return bodies
     for body_el in objects.findall("Body"):
         geometries: list[OsimGeometry] = []
-        # Only attached_geometry meshes; FrameGeometry is intentionally ignored.
-        attached = body_el.find("attached_geometry")
-        if attached is not None:
-            for mesh_el in attached.findall("Mesh"):
-                geometries.append(
-                    OsimGeometry(
-                        mesh_name=mesh_el.get("name", ""),
-                        mesh_file=(mesh_el.findtext("mesh_file") or "").strip(),
-                        scale_factors=_floats(mesh_el.findtext("scale_factors")),
-                    )
+
+        # (a) Direct geometry: Body/attached_geometry/Mesh, identity local offset.
+        geometries.extend(
+            _parse_meshes(body_el.find("attached_geometry"), OsimFrameOffset.identity())
+        )
+
+        # (b) Geometry attached via the body's own <components> PhysicalOffsetFrames
+        # (e.g. torso thoracic/cervical meshes). Each carries its own local offset.
+        # These are internal to the Body and must not be confused with the joint
+        # offset frames (handled in JointSet). Frames without a Mesh are skipped.
+        components = body_el.find("components")
+        if components is not None:
+            for pof in components.findall("PhysicalOffsetFrame"):
+                attached = pof.find("attached_geometry")
+                if attached is None or attached.find("Mesh") is None:
+                    continue
+                offset = OsimFrameOffset(
+                    translation=_floats(pof.findtext("translation")) or [0.0, 0.0, 0.0],
+                    orientation=_floats(pof.findtext("orientation")) or [0.0, 0.0, 0.0],
                 )
+                geometries.extend(_parse_meshes(attached, offset))
+
         bodies.append(OsimBody(name=body_el.get("name", ""), geometries=geometries))
     return bodies
 
