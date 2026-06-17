@@ -66,6 +66,8 @@ MHR_OBJECT_NAME = "MHR_body"
 OPENSIM_COLLECTION_NAME = "OpenSim_model"
 MARKERS_COLLECTION_NAME = "markers"
 MARKER_MATERIAL = "Mesh2Marker_marker"
+MARKER_ACTIVE_MATERIAL = "Mesh2Marker_marker_active"
+MARKER_ACTIVE_SCALE = 2.2
 
 
 def _find_view3d_shading(context):
@@ -101,6 +103,19 @@ def _marker_material():
     return mat
 
 
+def _marker_active_material():
+    """Get/create the highlight (green) material for the active marker sphere."""
+    mat = bpy.data.materials.get(MARKER_ACTIVE_MATERIAL) or bpy.data.materials.new(
+        MARKER_ACTIVE_MATERIAL
+    )
+    mat.use_nodes = True
+    bsdf = mat.node_tree.nodes.get("Principled BSDF")
+    if bsdf is not None:
+        bsdf.inputs["Base Color"].default_value = (0.1, 0.9, 0.1, 1.0)
+    mat.diffuse_color = (0.1, 0.9, 0.1, 1.0)  # solid-view colour
+    return mat
+
+
 def _marker_sphere_mesh(radius: float):
     """Build one small UV-sphere mesh datablock shared by all marker objects."""
     bm = bmesh.new()
@@ -124,6 +139,54 @@ def _find_link_item(props, marker_name):
         if link.marker_name == marker_name:
             return i, link
     return -1, None
+
+
+def _set_marker_object_material(obj, mat) -> None:
+    """Assign a per-OBJECT material to a marker sphere (spheres share one mesh)."""
+    if not obj.material_slots:
+        return
+    slot = obj.material_slots[0]
+    slot.link = "OBJECT"
+    slot.material = mat
+
+
+def highlight_active_marker(context) -> None:
+    """Colour the active marker sphere green and enlarged; the rest red at scale 1.
+
+    No-op when the marker spheres do not exist yet.
+    """
+    props = context.scene.mesh2marker
+    active_obj_name = ""
+    active_name = _active_marker_name(props)
+    if active_name:
+        active_obj_name = f"marker_{active_name}"
+
+    for obj in bpy.data.objects:
+        if not obj.name.startswith("marker_"):
+            continue
+        if obj.name == active_obj_name:
+            _set_marker_object_material(obj, _marker_active_material())
+            obj.scale = (MARKER_ACTIVE_SCALE,) * 3
+        else:
+            _set_marker_object_material(obj, _marker_material())
+            obj.scale = (1.0, 1.0, 1.0)
+
+
+def _update_active_marker(self, context):
+    highlight_active_marker(context)
+
+
+def _set_model_selectable(selectable: bool) -> None:
+    """Toggle hide_select on the OpenSim model bones and marker spheres (not hidden)."""
+    coll = bpy.data.collections.get(OPENSIM_COLLECTION_NAME)
+    if coll is None:
+        return
+    hide = not selectable
+    for obj in coll.objects:
+        obj.hide_select = hide
+    for child in coll.children:  # the markers sub-collection
+        for obj in child.objects:
+            obj.hide_select = hide
 
 
 class MarkerNameItem(PropertyGroup):
@@ -175,7 +238,7 @@ class Mesh2MarkerProperties(PropertyGroup):
         update=_update_mesh_alpha,
     )
     marker_names: CollectionProperty(type=MarkerNameItem)
-    active_marker_index: IntProperty(default=0)
+    active_marker_index: IntProperty(default=0, update=_update_active_marker)
     links: CollectionProperty(type=MarkerLinkItem)
 
 
@@ -349,7 +412,12 @@ class MESH2MARKER_OT_load_opensim(Operator):
                 marker_obj.matrix_world = conversion @ mathutils.Matrix.Translation(
                     (float(pos[0]), float(pos[1]), float(pos[2]))
                 )
+                # Per-object material so each sphere can be coloured independently.
+                _set_marker_object_material(marker_obj, _marker_material())
                 n_markers += 1
+
+        # Highlight the initially active marker.
+        highlight_active_marker(context)
 
         self.report(
             {"INFO"},
@@ -571,6 +639,66 @@ class MESH2MARKER_OT_select_linked(Operator):
         return {"FINISHED"}
 
 
+class MESH2MARKER_OT_enter_picking(Operator):
+    """Edit MHR_body in vertex mode with X-ray; make the skeleton unselectable."""
+
+    bl_idname = "mesh2marker.enter_picking"
+    bl_label = "Enter picking mode"
+    bl_description = (
+        "Edit MHR_body in vertex/X-ray mode and lock the skeleton so clicks land on "
+        "the mesh"
+    )
+    bl_options = {"REGISTER"}
+
+    def execute(self, context):
+        obj = bpy.data.objects.get(MHR_OBJECT_NAME)
+        if obj is None or obj.type != "MESH":
+            self.report(
+                {"ERROR"}, f"{MHR_OBJECT_NAME!r} not found; load the MHR mesh first"
+            )
+            return {"CANCELLED"}
+
+        if context.mode != "OBJECT":
+            bpy.ops.object.mode_set(mode="OBJECT")
+        bpy.ops.object.select_all(action="DESELECT")
+        obj.select_set(True)
+        context.view_layer.objects.active = obj
+
+        # Skeleton and marker spheres become unselectable (kept visible).
+        _set_model_selectable(False)
+
+        bpy.ops.object.mode_set(mode="EDIT")
+        bpy.ops.mesh.select_mode(type="VERT")
+
+        shading = _find_view3d_shading(context)
+        if shading is not None:
+            shading.show_xray = True
+            shading.xray_alpha = context.scene.mesh2marker.mesh_alpha
+
+        self.report(
+            {"INFO"},
+            "Picking mode: select vertices on MHR_body, then Link selected vertices "
+            "to marker",
+        )
+        return {"FINISHED"}
+
+
+class MESH2MARKER_OT_exit_picking(Operator):
+    """Return to Object Mode and make the skeleton selectable again."""
+
+    bl_idname = "mesh2marker.exit_picking"
+    bl_label = "Exit picking mode"
+    bl_description = "Back to Object Mode; make the skeleton and markers selectable again"
+    bl_options = {"REGISTER"}
+
+    def execute(self, context):
+        if context.mode != "OBJECT":
+            bpy.ops.object.mode_set(mode="OBJECT")
+        _set_model_selectable(True)
+        self.report({"INFO"}, "Exited picking mode")
+        return {"FINISHED"}
+
+
 class MESH2MARKER_PT_panel(Panel):
     bl_label = "Mesh2Marker"
     bl_idname = "MESH2MARKER_PT_panel"
@@ -605,13 +733,6 @@ class MESH2MARKER_PT_panel(Panel):
         layout.separator()
 
         col = layout.column(align=True)
-        col.label(text="Display")
-        col.prop(props, "mesh_alpha", slider=True)
-        col.operator(MESH2MARKER_OT_toggle_transparency.bl_idname, icon="XRAY")
-
-        layout.separator()
-
-        col = layout.column(align=True)
         col.label(text="Markers")
         col.template_list(
             "MESH2MARKER_UL_markers",
@@ -623,11 +744,18 @@ class MESH2MARKER_PT_panel(Panel):
             rows=6,
         )
         row = col.row(align=True)
+        row.operator(MESH2MARKER_OT_enter_picking.bl_idname, icon="EDITMODE_HLT")
+        row.operator(MESH2MARKER_OT_exit_picking.bl_idname, icon="OBJECT_DATAMODE")
+        row = col.row(align=True)
         row.operator(MESH2MARKER_OT_link_vertices.bl_idname, icon="LINKED")
         row.operator(MESH2MARKER_OT_unlink_marker.bl_idname, icon="UNLINKED")
         col.operator(
             MESH2MARKER_OT_select_linked.bl_idname, icon="RESTRICT_SELECT_OFF"
         )
+
+        col.separator()
+        col.prop(props, "mesh_alpha", slider=True)
+        col.operator(MESH2MARKER_OT_toggle_transparency.bl_idname, icon="XRAY")
 
 
 _CLASSES = (
@@ -639,6 +767,8 @@ _CLASSES = (
     MESH2MARKER_OT_align_mhr,
     MESH2MARKER_OT_toggle_transparency,
     MESH2MARKER_UL_markers,
+    MESH2MARKER_OT_enter_picking,
+    MESH2MARKER_OT_exit_picking,
     MESH2MARKER_OT_link_vertices,
     MESH2MARKER_OT_unlink_marker,
     MESH2MARKER_OT_select_linked,
