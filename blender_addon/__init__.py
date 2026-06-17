@@ -56,6 +56,7 @@ from bpy.props import (  # noqa: E402
     BoolProperty,
     CollectionProperty,
     FloatProperty,
+    FloatVectorProperty,
     IntProperty,
     PointerProperty,
     StringProperty,
@@ -324,6 +325,35 @@ def _set_model_selectable(selectable: bool) -> None:
             obj.hide_select = hide
 
 
+# Shape morph: the basis holds numpy arrays (too big / not serializable as a
+# Property), so it is cached module-globally. Blender caps a FloatVectorProperty at
+# 32 elements, so betas are stored as 32 (the real basis has 45; only 12 are exposed
+# and the rest stay 0, which the core morph zero-pads back to 45).
+_SHAPE_BASIS = None
+N_BETAS = 32
+N_BETAS_SHOWN = 12
+
+
+def _morph_to_mhr_body(context) -> None:
+    """Regenerate MHR_body vertex positions from the cached basis + current betas."""
+    if _SHAPE_BASIS is None:
+        return
+    obj = bpy.data.objects.get(MHR_OBJECT_NAME)
+    if obj is None or obj.type != "MESH":
+        return
+    from mesh2marker.morph import morph
+
+    sample = morph(_SHAPE_BASIS, list(context.scene.mesh2marker.betas))
+    if len(obj.data.vertices) != sample.verts.shape[0]:
+        return  # topology mismatch: do not touch
+    obj.data.vertices.foreach_set("co", sample.verts.ravel())
+    obj.data.update()
+
+
+def _update_betas(self, context):
+    _morph_to_mhr_body(context)
+
+
 class MarkerNameItem(PropertyGroup):
     """One OpenSim marker name (the pickable list, filled at model load)."""
 
@@ -376,6 +406,19 @@ class Mesh2MarkerProperties(PropertyGroup):
         min=0.05,
         max=1.0,
         update=_update_mesh_alpha,
+    )
+    shape_basis_path: StringProperty(
+        name="Shape basis path",
+        description="Path to the MHR shape basis .npz",
+        subtype="FILE_PATH",
+        default="",
+    )
+    betas: FloatVectorProperty(
+        name="Shape betas",
+        description="MHR shape coefficients (rest-pose morph)",
+        size=N_BETAS,
+        default=[0.0] * N_BETAS,
+        update=_update_betas,
     )
     marker_names: CollectionProperty(type=MarkerNameItem)
     active_marker_index: IntProperty(default=0, update=_update_active_marker)
@@ -1059,6 +1102,74 @@ class MESH2MARKER_OT_exit_picking(Operator):
         return {"FINISHED"}
 
 
+class MESH2MARKER_OT_load_shape_basis(Operator):
+    """Load the MHR shape basis and build the rest-pose mesh (betas = 0)."""
+
+    bl_idname = "mesh2marker.load_shape_basis"
+    bl_label = "Load shape basis"
+    bl_description = "Load the MHR shape basis (.npz) and build the rest-pose MHR_body"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        global _SHAPE_BASIS
+        props = context.scene.mesh2marker
+        path = (
+            bpy.path.abspath(props.shape_basis_path.strip())
+            if props.shape_basis_path
+            else ""
+        )
+        if not path:
+            self.report({"ERROR"}, "Shape basis path is empty")
+            return {"CANCELLED"}
+
+        _reload_core()
+        from mesh2marker.morph import load_shape_basis, morph
+
+        try:
+            basis = load_shape_basis(path)
+        except (OSError, ValueError) as exc:
+            self.report({"ERROR"}, f"Load shape basis failed: {exc}")
+            return {"CANCELLED"}
+
+        _SHAPE_BASIS = basis
+        props.betas = [0.0] * N_BETAS  # mean shape (update is a no-op until built)
+        sample = morph(basis, [0.0] * basis.n_shape)
+
+        existing = bpy.data.objects.get(MHR_OBJECT_NAME)
+        if existing is not None:
+            old_mesh = existing.data
+            bpy.data.objects.remove(existing, do_unlink=True)
+            if old_mesh is not None and old_mesh.users == 0:
+                bpy.data.meshes.remove(old_mesh)
+
+        mesh = bpy.data.meshes.new(MHR_OBJECT_NAME)
+        mesh.from_pydata(sample.verts.tolist(), [], sample.faces.tolist())
+        mesh.update()
+        obj = bpy.data.objects.new(MHR_OBJECT_NAME, mesh)
+        context.scene.collection.objects.link(obj)
+
+        self.report(
+            {"INFO"},
+            f"Loaded shape basis ({basis.n_shape} components, {len(sample.verts)} "
+            "verts). Re-run Align / Load OpenSim / Snap to update markers.",
+        )
+        return {"FINISHED"}
+
+
+class MESH2MARKER_OT_reset_shape(Operator):
+    """Reset all shape betas to zero (mean shape)."""
+
+    bl_idname = "mesh2marker.reset_shape"
+    bl_label = "Reset shape"
+    bl_description = "Set all shape coefficients back to 0 (mean shape)"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        context.scene.mesh2marker.betas = [0.0] * N_BETAS
+        self.report({"INFO"}, "Shape reset to mean")
+        return {"FINISHED"}
+
+
 class MESH2MARKER_OT_export_correspondence(Operator):
     """Write the correspondence file (vertex-index map) as JSON."""
 
@@ -1269,6 +1380,17 @@ class MESH2MARKER_PT_panel(Panel):
         layout.separator()
 
         col = layout.column(align=True)
+        col.label(text="Shape (morph)")
+        col.prop(props, "shape_basis_path")
+        col.operator(MESH2MARKER_OT_load_shape_basis.bl_idname, icon="MOD_SMOOTH")
+        for i in range(N_BETAS_SHOWN):
+            col.prop(props, "betas", index=i, text=f"Shape {i}")
+        col.operator(MESH2MARKER_OT_reset_shape.bl_idname, icon="LOOP_BACK")
+        col.label(text=f"Basis has 45 components; {N_BETAS_SHOWN} shown")
+
+        layout.separator()
+
+        col = layout.column(align=True)
         col.label(text="OpenSim model")
         col.prop(props, "osim_path")
         col.prop(props, "geometry_dir")
@@ -1327,6 +1449,8 @@ _CLASSES = (
     MarkerLinkItem,
     Mesh2MarkerProperties,
     MESH2MARKER_OT_load_mhr,
+    MESH2MARKER_OT_load_shape_basis,
+    MESH2MARKER_OT_reset_shape,
     MESH2MARKER_OT_load_opensim,
     MESH2MARKER_OT_align_mhr,
     MESH2MARKER_OT_toggle_transparency,

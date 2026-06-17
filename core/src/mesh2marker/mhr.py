@@ -31,6 +31,8 @@ class MhrSample:
     coordinate_frame: str
     units: str
     source: str
+    # Shape coefficients when the sample was produced by morph(); None otherwise.
+    betas: list[float] | None = None
 
 
 def _meta_scalar(data: np.lib.npyio.NpzFile, key: str):
