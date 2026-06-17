@@ -89,3 +89,38 @@ not covered).
 - blender_addon: tested via Blender background mode (blender --background --python ...) or in a
   native Blender; the precise interactive dev loop is set up when the Blender tickets start.
 - Build the extension with: blender --command extension build
+
+## Vision and future direction
+Forward-looking context for future sessions. These are VISION decisions, not tickets to
+implement now; they explain where the tool is heading and why.
+
+### Bidirectional tool (an optimiser in both directions)
+Mesh2Marker is bidirectional — think of it as an optimiser that runs both ways:
+- Direction 1 — picking (ticket 5b): for each OpenSim marker, find the index of the
+  corresponding MHR vertex. The vertex index is the reference datum, fixed (MHR topology is
+  fixed), and exact regardless of alignment quality.
+- Direction 2 — repositioning (ticket 5c): the inverse — move the OpenSim marker positions so
+  they sit on the SKIN at the chosen vertex (far enough out from the bone). It is the markers
+  that move, never the vertices; a marker's position is DERIVED from its vertex index.
+
+Biomechanical rationale: the upstream pipeline's virtual markers also come from the skin (the
+mesh), so moving the model's markers onto the skin makes the marker set consistent with the data
+(skin against skin), removing the systematic bone/skin offset the IK currently sees.
+
+### Morphology plan (future extension of 5c — do NOT implement now)
+- Because the map is indexed by vertex (not by position), changing the MHR mesh shape
+  automatically changes each vertex's skin position, hence the marker positions. A heavier
+  subject => skin farther from the bone => markers farther out, DETERMINISTICALLY (no free
+  parameter to optimise; the subject's skin gives the answer).
+- Two morphology sources, same machinery: (a) manual morphology via a slider to build archetypes
+  (thin/average/heavy); (b) estimated morphology of the real subject (their betas computed by the
+  upstream pipeline) for a person-specific model.
+- 5c will be generalised: take an MHR mesh of ANY morphology (.npz) as input, read the vertices
+  at the map's indices, express them in the OpenSim segment frame (via the subject's MHR joints,
+  not via the global pre-alignment, for robustness), and write a .osim with the markers at those
+  skin positions.
+- Architecture constraint kept: Mesh2Marker does NOT depend on MHR / pymomentum (zero compiled
+  wheels). The morphology slider will be PURE NUMPY: linear shape deformation in rest pose
+  (template + sum(beta_i * direction_i)). The shape basis (template + 45 identity directions +
+  shape->joints regression) will be exported ONCE from the upstream pipeline (which has MHR) to a
+  simple .npz that Mesh2Marker consumes. To confirm: linearity of MHR shape at rest.
