@@ -68,6 +68,8 @@ MARKERS_COLLECTION_NAME = "markers"
 MARKER_MATERIAL = "Mesh2Marker_marker"
 MARKER_ACTIVE_MATERIAL = "Mesh2Marker_marker_active"
 MARKER_ACTIVE_SCALE = 2.2
+LINKED_VERTEX_MATERIAL = "Mesh2Marker_linked_vertex"
+LINKED_VERTEX_OBJECT = "linked_vertex_indicator"
 
 
 def _find_view3d_shading(context):
@@ -116,15 +118,47 @@ def _marker_active_material():
     return mat
 
 
-def _marker_sphere_mesh(radius: float):
-    """Build one small UV-sphere mesh datablock shared by all marker objects."""
+def _linked_vertex_material():
+    """Get/create the (cyan) material for the linked-vertex indicator."""
+    mat = bpy.data.materials.get(LINKED_VERTEX_MATERIAL) or bpy.data.materials.new(
+        LINKED_VERTEX_MATERIAL
+    )
+    mat.use_nodes = True
+    bsdf = mat.node_tree.nodes.get("Principled BSDF")
+    if bsdf is not None:
+        bsdf.inputs["Base Color"].default_value = (0.1, 0.7, 0.9, 1.0)
+    mat.diffuse_color = (0.1, 0.7, 0.9, 1.0)  # solid-view colour
+    return mat
+
+
+def _build_sphere_mesh(name: str, radius: float):
     bm = bmesh.new()
     bmesh.ops.create_uvsphere(bm, u_segments=8, v_segments=6, radius=radius)
-    mesh = bpy.data.meshes.new("Mesh2Marker_marker_sphere")
+    mesh = bpy.data.meshes.new(name)
     bm.to_mesh(mesh)
     bm.free()
+    return mesh
+
+
+def _marker_sphere_mesh(radius: float):
+    """Build one small UV-sphere mesh datablock shared by all marker objects."""
+    mesh = _build_sphere_mesh("Mesh2Marker_marker_sphere", radius)
     mesh.materials.append(_marker_material())
     return mesh
+
+
+def _linked_vertex_indicator():
+    """Get/create the reusable cyan indicator object for the linked skin vertex."""
+    obj = bpy.data.objects.get(LINKED_VERTEX_OBJECT)
+    if obj is None:
+        mesh = _build_sphere_mesh("Mesh2Marker_linked_vertex_sphere", 0.008)
+        mesh.materials.append(_linked_vertex_material())
+        obj = bpy.data.objects.new(LINKED_VERTEX_OBJECT, mesh)
+        obj.hide_select = True  # must never block picking
+        coll = bpy.data.collections.get(OPENSIM_COLLECTION_NAME)
+        target = coll if coll is not None else bpy.context.scene.collection
+        target.objects.link(obj)
+    return obj
 
 
 def _active_marker_name(props) -> str:
@@ -171,9 +205,54 @@ def highlight_active_marker(context) -> None:
             _set_marker_object_material(obj, _marker_material())
             obj.scale = (1.0, 1.0, 1.0)
 
+    update_linked_vertex_indicator(context)
+
+
+def update_linked_vertex_indicator(context) -> None:
+    """Show a cyan dot on the MHR vertex linked to the active marker (skin side).
+
+    Reads the position from the displayed MHR_body mesh, so the dot follows the
+    visible vertex under any alignment. Hidden when there is no link, MHR_body is
+    missing, the index is out of range, or the option is off.
+    """
+    props = context.scene.mesh2marker
+    indicator = bpy.data.objects.get(LINKED_VERTEX_OBJECT)
+
+    idx = -1
+    if getattr(props, "show_linked_vertex", True):
+        active_name = _active_marker_name(props)
+        if active_name:
+            _, link = _find_link_item(props, active_name)
+            if link is not None and link.vertex_indices:
+                first = link.vertex_indices.split(",")[0]
+                if first:
+                    idx = int(first)
+
+    mhr = bpy.data.objects.get(MHR_OBJECT_NAME)
+    valid = (
+        idx >= 0
+        and mhr is not None
+        and mhr.type == "MESH"
+        and idx < len(mhr.data.vertices)
+    )
+    if not valid:
+        if indicator is not None:
+            indicator.hide_viewport = True
+        return
+
+    indicator = _linked_vertex_indicator()
+    world_co = mhr.matrix_world @ mhr.data.vertices[idx].co
+    indicator.matrix_world = mathutils.Matrix.Translation(world_co)
+    indicator.hide_viewport = False
+    indicator.hide_select = True
+
 
 def _update_active_marker(self, context):
     highlight_active_marker(context)
+
+
+def _update_show_linked_vertex(self, context):
+    update_linked_vertex_indicator(context)
 
 
 def _set_model_selectable(selectable: bool) -> None:
@@ -183,6 +262,8 @@ def _set_model_selectable(selectable: bool) -> None:
         return
     hide = not selectable
     for obj in coll.objects:
+        if obj.name == LINKED_VERTEX_OBJECT:
+            continue  # the indicator stays unselectable regardless
         obj.hide_select = hide
     for child in coll.children:  # the markers sub-collection
         for obj in child.objects:
@@ -240,6 +321,12 @@ class Mesh2MarkerProperties(PropertyGroup):
     marker_names: CollectionProperty(type=MarkerNameItem)
     active_marker_index: IntProperty(default=0, update=_update_active_marker)
     links: CollectionProperty(type=MarkerLinkItem)
+    show_linked_vertex: BoolProperty(
+        name="Show linked vertex",
+        description="Show a cyan dot on the MHR vertex linked to the active marker",
+        default=True,
+        update=_update_show_linked_vertex,
+    )
 
 
 class MESH2MARKER_OT_load_mhr(Operator):
@@ -570,6 +657,7 @@ class MESH2MARKER_OT_link_vertices(Operator):
             item.marker_name = marker_name
         item.vertex_indices = csv
 
+        update_linked_vertex_indicator(context)
         self.report({"INFO"}, f"Linked {marker_name}: {len(ordered)} vertex(es)")
         return {"FINISHED"}
 
@@ -593,6 +681,7 @@ class MESH2MARKER_OT_unlink_marker(Operator):
             self.report({"WARNING"}, f"{marker_name} is not linked")
             return {"CANCELLED"}
         props.links.remove(idx)
+        update_linked_vertex_indicator(context)
         self.report({"INFO"}, f"Unlinked {marker_name}")
         return {"FINISHED"}
 
@@ -816,6 +905,7 @@ class MESH2MARKER_PT_panel(Panel):
         col.operator(
             MESH2MARKER_OT_select_linked.bl_idname, icon="RESTRICT_SELECT_OFF"
         )
+        col.prop(props, "show_linked_vertex")
 
         col.separator()
         col.prop(props, "mesh_alpha", slider=True)
