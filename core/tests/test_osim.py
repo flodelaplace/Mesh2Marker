@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from mesh2marker.osim import parse_osim
+from mesh2marker.osim import parse_osim, write_osim_with_markers
 
 FIXTURE = Path(__file__).parent / "fixtures" / "minimal.osim"
 REAL_MODEL = (
@@ -59,6 +59,24 @@ def test_components_geometry_local_offset(model):
     assert extra.mesh_file == "ilium.vtp"
     assert extra.local_offset.translation == [0.1, 0.2, 0.3]
     assert extra.local_offset.orientation == [0.0, 0.0, 0.0]
+
+
+def test_write_osim_with_markers(tmp_path):
+    dst = tmp_path / "repositioned.osim"
+    write_osim_with_markers(FIXTURE, dst, {"RASIS": (0.5, -0.1, 0.2)})
+
+    out = parse_osim(dst)
+
+    by_name = {m.name: m for m in out.markers}
+    # The listed marker's location is replaced...
+    assert by_name["RASIS"].location == [0.5, -0.1, 0.2]
+    assert by_name["RASIS"].parent_body == "pelvis"
+    # ...and the unlisted marker is untouched.
+    assert by_name["RKNE"].location == [0.0, -0.4, 0.05]
+    # Other sections are intact.
+    assert [b.name for b in out.bodies] == ["pelvis", "femur_r", "tibia_r"]
+    assert {j.name for j in out.joints} == {"ground_pelvis", "hip_r"}
+    assert len(out.markers) == 2
 
 
 def test_joints_resolved(model):

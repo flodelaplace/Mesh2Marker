@@ -278,6 +278,27 @@ def _vec_csv(vec) -> str:
     return f"{float(vec[0])},{float(vec[1])},{float(vec[2])}"
 
 
+def _links_from_props(props, name_to_body) -> list[dict]:
+    """Build core 'link' dicts from the session CollectionProperty."""
+    links = []
+    for item in props.links:
+        if not item.vertex_indices:
+            continue
+        indices = [int(s) for s in item.vertex_indices.split(",") if s]
+        offset = None
+        if item.local_offset:
+            offset = [float(s) for s in item.local_offset.split(",")]
+        links.append(
+            {
+                "marker": item.marker_name,
+                "vertex_indices": indices,
+                "opensim_body": name_to_body.get(item.marker_name, ""),
+                "local_offset": offset,
+            }
+        )
+    return links
+
+
 def _move_marker_sphere(marker_name: str, world_pos, conversion) -> None:
     """Move a marker sphere to a world position (Z-up converted), if it exists."""
     obj = bpy.data.objects.get(f"marker_{marker_name}")
@@ -1038,6 +1059,197 @@ class MESH2MARKER_OT_exit_picking(Operator):
         return {"FINISHED"}
 
 
+class MESH2MARKER_OT_export_correspondence(Operator):
+    """Write the correspondence file (vertex-index map) as JSON."""
+
+    bl_idname = "mesh2marker.export_correspondence"
+    bl_label = "Export correspondence file"
+    bl_description = "Write the marker -> MHR-vertex map as a JSON correspondence file"
+    bl_options = {"REGISTER"}
+
+    filepath: StringProperty(subtype="FILE_PATH")
+    filter_glob: StringProperty(default="*.json", options={"HIDDEN"})
+
+    def invoke(self, context, event):
+        if not self.filepath:
+            self.filepath = "correspondence.json"
+        context.window_manager.fileselect_add(self)
+        return {"RUNNING_MODAL"}
+
+    def execute(self, context):
+        props = context.scene.mesh2marker
+        _reload_core()
+        from mesh2marker.correspondence import write_correspondence
+        from mesh2marker.procrustes import to_frame_alignment
+
+        try:
+            sample, model, global_transform, _ = _compute_alignment(props)
+        except (OSError, ValueError) as exc:
+            self.report({"ERROR"}, f"Export failed: {exc}")
+            return {"CANCELLED"}
+
+        name_to_body = {m.name: m.parent_body for m in model.markers}
+        links = _links_from_props(props, name_to_body)
+        if not links:
+            self.report({"WARNING"}, "No links to export")
+            return {"CANCELLED"}
+
+        write_correspondence(
+            links,
+            self.filepath,
+            mhr_topology_id=f"mhr-{len(sample.verts)}",
+            opensim_model=model.name,
+            marker_set="mesh2marker",
+            frame_alignment=to_frame_alignment(global_transform),
+        )
+        self.report(
+            {"INFO"}, f"Exported {len(links)} markers -> {self.filepath}"
+        )
+        return {"FINISHED"}
+
+
+class MESH2MARKER_OT_export_osim(Operator):
+    """Write a copy of the source .osim with the linked markers repositioned."""
+
+    bl_idname = "mesh2marker.export_osim"
+    bl_label = "Export OpenSim model (.osim)"
+    bl_description = "Write the source .osim with linked markers moved onto the skin"
+    bl_options = {"REGISTER"}
+
+    filepath: StringProperty(subtype="FILE_PATH")
+    filter_glob: StringProperty(default="*.osim", options={"HIDDEN"})
+
+    def invoke(self, context, event):
+        if not self.filepath:
+            self.filepath = "model_repositioned.osim"
+        context.window_manager.fileselect_add(self)
+        return {"RUNNING_MODAL"}
+
+    def execute(self, context):
+        props = context.scene.mesh2marker
+        osim_src = bpy.path.abspath(props.osim_path.strip()) if props.osim_path else ""
+        if not osim_src:
+            self.report({"ERROR"}, "Set the OSIM path (source model) first")
+            return {"CANCELLED"}
+
+        _reload_core()
+        from mesh2marker.linking import reposition_marker_to_vertex
+        from mesh2marker.osim import write_osim_with_markers
+
+        try:
+            sample, model, gt, seg = _compute_alignment(props)
+        except (OSError, ValueError) as exc:
+            self.report({"ERROR"}, f"Export failed: {exc}")
+            return {"CANCELLED"}
+
+        locations = {}
+        for item in props.links:
+            if not item.vertex_indices:
+                continue
+            if item.local_offset:
+                loc = tuple(float(s) for s in item.local_offset.split(","))
+            else:
+                # linked but not snapped: compute the local position on the fly.
+                idx = int(item.vertex_indices.split(",")[0])
+                try:
+                    local = reposition_marker_to_vertex(
+                        model, item.marker_name, sample.verts, idx, gt, seg
+                    )
+                except ValueError:
+                    continue
+                loc = tuple(float(x) for x in local)
+            locations[item.marker_name] = loc
+
+        if not locations:
+            self.report({"WARNING"}, "No linked markers to write")
+            return {"CANCELLED"}
+
+        write_osim_with_markers(osim_src, self.filepath, locations)
+        self.report(
+            {"INFO"}, f"Wrote {len(locations)} marker locations -> {self.filepath}"
+        )
+        return {"FINISHED"}
+
+
+class MESH2MARKER_OT_import_correspondence(Operator):
+    """Load a correspondence file into the session links."""
+
+    bl_idname = "mesh2marker.import_correspondence"
+    bl_label = "Load correspondence file"
+    bl_description = "Load a JSON correspondence file into the session"
+    bl_options = {"REGISTER", "UNDO"}
+
+    filepath: StringProperty(subtype="FILE_PATH")
+    filter_glob: StringProperty(default="*.json", options={"HIDDEN"})
+
+    def invoke(self, context, event):
+        context.window_manager.fileselect_add(self)
+        return {"RUNNING_MODAL"}
+
+    def execute(self, context):
+        props = context.scene.mesh2marker
+        if not self.filepath or not Path(self.filepath).is_file():
+            self.report({"ERROR"}, "File not found")
+            return {"CANCELLED"}
+
+        _reload_core()
+        from mesh2marker.correspondence import read_correspondence_links
+
+        try:
+            corr, links = read_correspondence_links(self.filepath)
+        except (OSError, ValueError) as exc:
+            self.report({"ERROR"}, f"Load failed: {exc}")
+            return {"CANCELLED"}
+
+        # Non-blocking warning on context mismatch.
+        osim_src = bpy.path.abspath(props.osim_path.strip()) if props.osim_path else ""
+        if osim_src and Path(osim_src).is_file():
+            try:
+                from mesh2marker.osim import parse_osim
+
+                current = parse_osim(osim_src)
+                if corr.opensim_model and corr.opensim_model != current.name:
+                    self.report(
+                        {"WARNING"},
+                        f"opensim_model differs: file {corr.opensim_model!r} vs "
+                        f"current {current.name!r}",
+                    )
+            except (OSError, ValueError):
+                pass
+
+        props.links.clear()
+        for link in links:
+            item = props.links.add()
+            item.marker_name = link["marker"]
+            item.vertex_indices = ",".join(str(i) for i in link["vertex_indices"])
+            offset = link.get("local_offset")
+            if offset:
+                item.local_offset = ",".join(str(float(x)) for x in offset)
+
+        # Best-effort sphere refresh (needs the model + mesh to be loadable).
+        try:
+            from mesh2marker.geometry import Y_UP_TO_Z_UP
+            from mesh2marker.linking import vertex_world_position
+
+            sample, _model, gt, _seg = _compute_alignment(props)
+            conversion = mathutils.Matrix(Y_UP_TO_Z_UP.tolist())
+            for item in props.links:
+                if not item.vertex_indices:
+                    continue
+                idx = int(item.vertex_indices.split(",")[0])
+                try:
+                    world_pos = vertex_world_position(sample.verts, idx, gt)
+                except ValueError:
+                    continue
+                _move_marker_sphere(item.marker_name, world_pos, conversion)
+        except (OSError, ValueError):
+            pass  # spheres just stay where they are
+
+        highlight_active_marker(context)
+        self.report({"INFO"}, f"Loaded {len(links)} links from {self.filepath}")
+        return {"FINISHED"}
+
+
 class MESH2MARKER_PT_panel(Panel):
     bl_label = "Mesh2Marker"
     bl_idname = "MESH2MARKER_PT_panel"
@@ -1101,6 +1313,14 @@ class MESH2MARKER_PT_panel(Panel):
         col.prop(props, "mesh_alpha", slider=True)
         col.operator(MESH2MARKER_OT_toggle_transparency.bl_idname, icon="XRAY")
 
+        layout.separator()
+
+        col = layout.column(align=True)
+        col.label(text="Export / Import")
+        col.operator(MESH2MARKER_OT_export_correspondence.bl_idname, icon="EXPORT")
+        col.operator(MESH2MARKER_OT_export_osim.bl_idname, icon="ARMATURE_DATA")
+        col.operator(MESH2MARKER_OT_import_correspondence.bl_idname, icon="IMPORT")
+
 
 _CLASSES = (
     MarkerNameItem,
@@ -1120,6 +1340,9 @@ _CLASSES = (
     MESH2MARKER_OT_snap_marker,
     MESH2MARKER_OT_set_marker_here,
     MESH2MARKER_OT_snap_all_markers,
+    MESH2MARKER_OT_export_correspondence,
+    MESH2MARKER_OT_export_osim,
+    MESH2MARKER_OT_import_correspondence,
     MESH2MARKER_PT_panel,
 )
 

@@ -280,3 +280,36 @@ def parse_osim(path: str | Path) -> OsimModel:
         joints=_parse_joints(model_el),
         markers=_parse_markers(model_el),
     )
+
+
+def write_osim_with_markers(
+    src_osim_path: str | Path,
+    dst_osim_path: str | Path,
+    marker_locations: dict[str, tuple[float, float, float]],
+) -> None:
+    """Copy ``src`` to ``dst``, replacing only the listed markers' <location> text.
+
+    Re-parses the source with ElementTree and, for each ``Marker`` of the MarkerSet
+    whose name is in ``marker_locations``, rewrites ONLY the text of its ``<location>``
+    (the segment-local position). Everything else (element order, other tags, other
+    elements' formatting) is preserved as parsed. Markers not listed are left
+    untouched.
+    """
+    tree = ET.parse(src_osim_path)
+    model_el = tree.getroot().find("Model")
+    if model_el is None:
+        raise ValueError(f"no <Model> element found in {src_osim_path}")
+
+    objects = model_el.find("MarkerSet/objects")
+    if objects is not None:
+        for marker_el in objects.findall("Marker"):
+            name = marker_el.get("name", "")
+            if name not in marker_locations:
+                continue
+            loc = marker_el.find("location")
+            if loc is None:
+                loc = ET.SubElement(marker_el, "location")
+            x, y, z = marker_locations[name]
+            loc.text = f"{float(x)} {float(y)} {float(z)}"
+
+    tree.write(dst_osim_path, encoding="UTF-8", xml_declaration=True)
