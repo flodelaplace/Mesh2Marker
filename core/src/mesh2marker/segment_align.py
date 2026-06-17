@@ -56,35 +56,54 @@ INHERIT: dict[str, str] = {
     "talus_l": "tibia_l",
     "calcn_l": "tibia_l",
     "toes_l": "tibia_l",
+    "sacrum": "pelvis",  # the sacrum follows the pelvis
 }
 
-# Bodies aligned by a full Procrustes fit on >=3 landmark pairs (MHR keypoint <->
-# OpenSim marker). This recovers the full orientation (roll included), which the
-# 2-point long-bone fit cannot, and constrains the head (an extremity with no distal
-# joint). Each entry: body -> [(MHR keypoint index, OpenSim marker name), ...].
-LANDMARK_SEGMENTS: dict[str, list[tuple[int, str]]] = {
+# Bodies aligned by a full Procrustes fit on >=3 landmark pairs. This recovers the
+# full orientation (roll) and scales volumetric segments (pelvis, torso) in 3D,
+# which the 1D long-bone fit cannot, and constrains the head (an extremity with no
+# distal joint). Each pair is (source_kind, source_index, OpenSim marker name) with
+# source_kind in {"keypoint", "vertex"}: the MHR-side landmark is a pose keypoint
+# (mhr70) or a fixed-topology mesh vertex (used for pelvis skin landmarks).
+# Vertex indices are known anatomical landmarks of the MHR template mesh.
+# lumbar1..5 and Abdomen are intentionally left at identity: they are deep, not
+# critical for the bone/skin display and have no reliable surface landmark.
+LANDMARK_SEGMENTS: dict[str, list[tuple[str, int, str]]] = {
     "head": [
-        (0, "Nose"),
-        (1, "LEye"),
-        (2, "REye"),
-        (3, "LEar"),
-        (4, "REar"),
+        ("keypoint", 0, "Nose"),
+        ("keypoint", 1, "LEye"),
+        ("keypoint", 2, "REye"),
+        ("keypoint", 3, "LEar"),
+        ("keypoint", 4, "REar"),
     ],
     "hand_r": [
-        (41, "RWrist_hand"),
-        (24, "RThumb"),
-        (28, "RIndex"),
-        (40, "RPinky"),
-        (25, "RIndexTip"),
-        (37, "RPinkyTip"),
+        ("keypoint", 41, "RWrist_hand"),
+        ("keypoint", 24, "RThumb"),
+        ("keypoint", 28, "RIndex"),
+        ("keypoint", 40, "RPinky"),
+        ("keypoint", 25, "RIndexTip"),
+        ("keypoint", 37, "RPinkyTip"),
     ],
     "hand_l": [
-        (62, "LWrist_hand"),
-        (45, "LThumb"),
-        (49, "LIndex"),
-        (61, "LPinky"),
-        (46, "LIndexTip"),
-        (58, "LPinkyTip"),
+        ("keypoint", 62, "LWrist_hand"),
+        ("keypoint", 45, "LThumb"),
+        ("keypoint", 49, "LIndex"),
+        ("keypoint", 61, "LPinky"),
+        ("keypoint", 46, "LIndexTip"),
+        ("keypoint", 58, "LPinkyTip"),
+    ],
+    # Pelvis: skin landmarks (ASIS/PSIS) are mesh vertices, not pose keypoints.
+    "pelvis": [
+        ("vertex", 7696, "RASI"),
+        ("vertex", 6531, "LASI"),
+        ("vertex", 7319, "RPSI"),
+        ("vertex", 6216, "LPSI"),
+    ],
+    "torso": [
+        ("keypoint", 68, "RACR"),
+        ("keypoint", 67, "LACR"),
+        ("keypoint", 69, "c_neck"),
+        ("vertex", 5768, "C7"),
     ],
 }
 
@@ -155,12 +174,13 @@ def compute_segment_transforms(
 ) -> dict[str, np.ndarray]:
     """One per-body similarity correction (4x4, OpenSim world frame) for every body.
 
-    Long bones are fit end-to-end (joint centre to joint centre); extremities listed
-    in :data:`LANDMARK_SEGMENTS` (head, hands) get a full Procrustes fit on >=3
-    landmark pairs, which recovers the roll the 2-point fit cannot and overrides any
-    inherited/identity value; remaining listed children inherit their ancestor's
-    correction; the trunk and any uncovered body get the identity. ``global_transform``
-    maps MHR keypoints into the OpenSim world frame; if omitted it is computed via
+    Long bones are fit end-to-end (joint centre to joint centre); bodies listed in
+    :data:`LANDMARK_SEGMENTS` (head, hands, and the volumetric pelvis and torso) get
+    a full Procrustes fit on >=3 landmark pairs, which recovers the roll the 2-point
+    fit cannot and scales volumetric segments in 3D, overriding any inherited/identity
+    value; remaining listed children inherit their ancestor's correction; the trunk
+    and any uncovered body get the identity. ``global_transform`` maps MHR landmarks
+    into the OpenSim world frame; if omitted it is computed via
     :func:`align_mhr_to_opensim`.
     """
     if global_transform is None:
@@ -168,9 +188,22 @@ def compute_segment_transforms(
 
     centers = joint_centers(model)
     n_kp = sample.keypoints.shape[0]
+    n_verts = sample.verts.shape[0]
 
     def kp_world(idx: int) -> np.ndarray:
         point = np.asarray(sample.keypoints[idx], dtype=float)
+        return np.asarray(global_transform.apply(point), dtype=float)
+
+    def mhr_world(source_kind: str, idx: int) -> np.ndarray | None:
+        """MHR landmark (keypoint or mesh vertex) lifted into the OpenSim frame."""
+        if source_kind == "keypoint":
+            if not (0 <= idx < n_kp):
+                return None
+            point = np.asarray(sample.keypoints[idx], dtype=float)
+        else:  # "vertex"
+            if not (0 <= idx < n_verts):
+                return None
+            point = np.asarray(sample.verts[idx], dtype=float)
         return np.asarray(global_transform.apply(point), dtype=float)
 
     transforms: dict[str, np.ndarray] = {}
@@ -189,20 +222,21 @@ def compute_segment_transforms(
         if matrix is not None:
             transforms[body] = matrix
 
-    # Full Procrustes for extremities (head, hands) on landmark pairs. These
-    # override any inherited/identity value for the listed bodies.
+    # Full Procrustes on landmark pairs for extremities (head, hands) and volumetric
+    # segments (pelvis, torso). These override any inherited/identity value.
     marker_world = neutral_marker_world_positions(model)
 
     for body, pairs in LANDMARK_SEGMENTS.items():
         source: list[np.ndarray] = []
         target: list[np.ndarray] = []
-        for kp_idx, marker_name in pairs:
+        for source_kind, source_index, marker_name in pairs:
             if marker_name not in marker_world:
                 continue
-            if not (0 <= kp_idx < n_kp):
+            mhr_point = mhr_world(source_kind, source_index)
+            if mhr_point is None:
                 continue
             source.append(marker_world[marker_name])
-            target.append(kp_world(kp_idx))
+            target.append(mhr_point)
         if len(source) >= LANDMARK_MIN_PAIRS:
             fit = procrustes_align(
                 np.asarray(source, dtype=float),

@@ -6,11 +6,8 @@ import numpy as np
 import pytest
 
 from mesh2marker.alignment import align_mhr_to_opensim
-from mesh2marker.kinematics import (
-    euler_xyz_to_matrix,
-    forward_kinematics,
-    joint_centers,
-)
+from mesh2marker.kinematics import euler_xyz_to_matrix, joint_centers
+from mesh2marker.markers import neutral_marker_world_positions
 from mesh2marker.mhr import MhrSample
 from mesh2marker.osim import (
     OsimBody,
@@ -192,6 +189,83 @@ def test_head_landmark_skipped_below_min_pairs():
     np.testing.assert_allclose(transforms["head"], np.eye(4), atol=1e-12)
 
 
+def _body_model(body_name: str, markers: list[OsimMarker]) -> OsimModel:
+    body = OsimBody(body_name, [])
+    joint = _joint(f"{body_name}_jnt", "ground", body_name, [0, 0, 0])
+    return OsimModel(name="m", bodies=[body], joints=[joint], markers=markers)
+
+
+def test_pelvis_landmark_from_vertices_recovers_similarity():
+    rng = np.random.default_rng(11)
+    pairs = LANDMARK_SEGMENTS["pelvis"]  # all ("vertex", idx, marker)
+    max_idx = max(idx for _, idx, _ in pairs)
+    verts = np.zeros((max_idx + 1, 3), dtype=np.float32)
+    for _, idx, _ in pairs:
+        verts[idx] = rng.normal(size=3)
+
+    rot = euler_xyz_to_matrix([0.2, 0.5, -0.3])
+    scale = 1.4
+    trans = np.array([0.1, 0.3, -0.2])
+    # marker world position = similarity(MHR vertex), using the stored float32 vertex.
+    markers = [
+        OsimMarker(
+            name, "pelvis", list(scale * rot @ np.asarray(verts[idx], float) + trans)
+        )
+        for _, idx, name in pairs
+    ]
+    sample = MhrSample(
+        verts=verts,
+        faces=np.zeros((1, 3), dtype=np.int32),
+        joint_coords=np.zeros((127, 3), dtype=np.float32),
+        keypoints=np.zeros((70, 3), dtype=np.float32),
+        frame_index=0,
+        coordinate_frame="estimator_camera_raw",
+        units="meters",
+        source="synthetic",
+    )
+    model = _body_model("pelvis", markers)
+
+    transforms = compute_segment_transforms(
+        sample, model, global_transform=_identity_similarity()
+    )
+
+    pelvis = transforms["pelvis"]
+    marker_world = neutral_marker_world_positions(model)
+    for _, idx, name in pairs:
+        target = np.asarray(verts[idx], dtype=float)  # global transform is identity
+        got = _apply(pelvis, marker_world[name])
+        np.testing.assert_allclose(got, target, atol=1e-6)
+
+
+def test_volumetric_landmark_skipped_below_min_pairs():
+    rng = np.random.default_rng(12)
+    pairs = LANDMARK_SEGMENTS["pelvis"]
+    max_idx = max(idx for _, idx, _ in pairs)
+    verts = np.zeros((max_idx + 1, 3), dtype=np.float32)
+    for _, idx, _ in pairs:
+        verts[idx] = rng.normal(size=3)
+    # Only 2 of the 4 pelvis markers exist -> 2 valid pairs < 3 -> not overwritten.
+    markers = [
+        OsimMarker(pairs[0][2], "pelvis", list(verts[pairs[0][1]])),
+        OsimMarker(pairs[1][2], "pelvis", list(verts[pairs[1][1]])),
+    ]
+    sample = MhrSample(
+        verts=verts,
+        faces=np.zeros((1, 3), dtype=np.int32),
+        joint_coords=np.zeros((127, 3), dtype=np.float32),
+        keypoints=np.zeros((70, 3), dtype=np.float32),
+        frame_index=0,
+        coordinate_frame="estimator_camera_raw",
+        units="meters",
+        source="synthetic",
+    )
+    model = _body_model("pelvis", markers)
+    transforms = compute_segment_transforms(
+        sample, model, global_transform=_identity_similarity()
+    )
+    np.testing.assert_allclose(transforms["pelvis"], np.eye(4), atol=1e-12)
+
+
 def test_every_body_has_a_correction():
     model = _femur_test_model()
     sample = _sample_with_kps({10: [1.0, 2.0, 3.0], 12: [1.0, 1.0, 3.0]})
@@ -251,8 +325,10 @@ def test_real_landmark_extremities():
     global_transform, _, _ = align_mhr_to_opensim(sample, model)
     transforms = compute_segment_transforms(sample, model, global_transform)
 
-    # Extremities get a non-identity Procrustes correction.
-    for body in ("head", "hand_r", "hand_l"):
+    landmark_bodies = ("head", "hand_r", "hand_l", "pelvis", "torso")
+
+    # Extremities and volumetric segments get a non-identity Procrustes correction.
+    for body in landmark_bodies:
         assert body in transforms
         assert not np.allclose(transforms[body], np.eye(4))
 
@@ -260,29 +336,27 @@ def test_real_landmark_extremities():
     assert not np.array_equal(transforms["hand_r"], transforms["radius_r"])
     assert not np.array_equal(transforms["hand_l"], transforms["radius_l"])
 
-    # Per-extremity Procrustes residual is finite and reasonable.
-    world = forward_kinematics(model)
-    marker_world = {
-        m.name: world[m.parent_body].rotation @ np.asarray(m.location, dtype=float)
-        + world[m.parent_body].translation
-        for m in model.markers
-        if m.parent_body in world
-    }
+    # The sacrum inherits the pelvis correction.
+    np.testing.assert_array_equal(transforms["sacrum"], transforms["pelvis"])
+
+    # Per-body Procrustes residual is finite and reasonable.
+    marker_world = neutral_marker_world_positions(model)
     n_kp = sample.keypoints.shape[0]
-    for body in ("head", "hand_r", "hand_l"):
+    n_verts = sample.verts.shape[0]
+
+    def mhr_world(source_kind, idx):
+        arr = sample.keypoints if source_kind == "keypoint" else sample.verts
+        return np.asarray(global_transform.apply(np.asarray(arr[idx], dtype=float)))
+
+    for body in landmark_bodies:
         matrix = transforms[body]
         source = []
         target = []
-        for kp_idx, marker_name in LANDMARK_SEGMENTS[body]:
-            if marker_name in marker_world and 0 <= kp_idx < n_kp:
+        for source_kind, idx, marker_name in LANDMARK_SEGMENTS[body]:
+            in_bounds = idx < (n_kp if source_kind == "keypoint" else n_verts)
+            if marker_name in marker_world and in_bounds:
                 source.append(marker_world[marker_name])
-                target.append(
-                    np.asarray(
-                        global_transform.apply(
-                            np.asarray(sample.keypoints[kp_idx], dtype=float)
-                        )
-                    )
-                )
+                target.append(mhr_world(source_kind, idx))
         source = np.asarray(source)
         target = np.asarray(target)
         assert len(source) >= 3
