@@ -418,6 +418,10 @@ class Mesh2MarkerProperties(PropertyGroup):
         description="MHR shape coefficients (rest-pose morph)",
         size=N_BETAS,
         default=[0.0] * N_BETAS,
+        soft_min=-3.0,
+        soft_max=3.0,
+        min=-5.0,
+        max=5.0,
         update=_update_betas,
     )
     marker_names: CollectionProperty(type=MarkerNameItem)
@@ -1383,8 +1387,9 @@ class MESH2MARKER_PT_panel(Panel):
         col.label(text="Shape (morph)")
         col.prop(props, "shape_basis_path")
         col.operator(MESH2MARKER_OT_load_shape_basis.bl_idname, icon="MOD_SMOOTH")
+        col.label(text="0 = mean shape; drag to 2-3 for a strong morph")
         for i in range(N_BETAS_SHOWN):
-            col.prop(props, "betas", index=i, text=f"Shape {i}")
+            col.prop(props, "betas", index=i, slider=True, text=f"Shape {i}")
         col.operator(MESH2MARKER_OT_reset_shape.bl_idname, icon="LOOP_BACK")
         col.label(text=f"Basis has 45 components; {N_BETAS_SHOWN} shown")
 
