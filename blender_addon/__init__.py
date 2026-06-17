@@ -54,11 +54,13 @@ import bpy  # noqa: E402 (must follow the sys.path shim above)
 import mathutils  # noqa: E402
 from bpy.props import (  # noqa: E402
     BoolProperty,
+    CollectionProperty,
     FloatProperty,
+    IntProperty,
     PointerProperty,
     StringProperty,
 )
-from bpy.types import Operator, Panel, PropertyGroup  # noqa: E402
+from bpy.types import Operator, Panel, PropertyGroup, UIList  # noqa: E402
 
 MHR_OBJECT_NAME = "MHR_body"
 OPENSIM_COLLECTION_NAME = "OpenSim_model"
@@ -110,6 +112,33 @@ def _marker_sphere_mesh(radius: float):
     return mesh
 
 
+def _active_marker_name(props) -> str:
+    idx = props.active_marker_index
+    if 0 <= idx < len(props.marker_names):
+        return props.marker_names[idx].name
+    return ""
+
+
+def _find_link_item(props, marker_name):
+    for i, link in enumerate(props.links):
+        if link.marker_name == marker_name:
+            return i, link
+    return -1, None
+
+
+class MarkerNameItem(PropertyGroup):
+    """One OpenSim marker name (the pickable list, filled at model load)."""
+
+    name: StringProperty(default="")
+
+
+class MarkerLinkItem(PropertyGroup):
+    """A marker -> MHR vertex-index link; indices stored as CSV (centroid first)."""
+
+    marker_name: StringProperty(default="")
+    vertex_indices: StringProperty(default="")
+
+
 class Mesh2MarkerProperties(PropertyGroup):
     npz_path: StringProperty(
         name="NPZ path",
@@ -145,6 +174,9 @@ class Mesh2MarkerProperties(PropertyGroup):
         max=1.0,
         update=_update_mesh_alpha,
     )
+    marker_names: CollectionProperty(type=MarkerNameItem)
+    active_marker_index: IntProperty(default=0)
+    links: CollectionProperty(type=MarkerLinkItem)
 
 
 class MESH2MARKER_OT_load_mhr(Operator):
@@ -237,6 +269,12 @@ class MESH2MARKER_OT_load_opensim(Operator):
         except (OSError, ValueError) as exc:
             self.report({"ERROR"}, f"Failed to load OpenSim model: {exc}")
             return {"CANCELLED"}
+
+        # Store the model's marker names as the pickable list for the UIList.
+        props.marker_names.clear()
+        for marker in model.markers:
+            props.marker_names.add().name = marker.name
+        props.active_marker_index = 0
 
         # Optional per-segment correction: fit each long bone onto the MHR mesh.
         # All matrices come from the core; the bpy layer only multiplies them.
@@ -404,6 +442,135 @@ class MESH2MARKER_OT_toggle_transparency(Operator):
         return {"FINISHED"}
 
 
+class MESH2MARKER_UL_markers(UIList):
+    def draw_item(
+        self, context, layout, data, item, icon, active_data, active_propname, index
+    ):
+        props = context.scene.mesh2marker
+        _, link = _find_link_item(props, item.name)
+        row = layout.row(align=True)
+        if link is not None and link.vertex_indices:
+            row.label(text=item.name, icon="CHECKMARK")
+            row.label(text=link.vertex_indices)
+        else:
+            row.label(text=item.name, icon="DOT")
+
+
+class MESH2MARKER_OT_link_vertices(Operator):
+    """Link the selected MHR_body vertices to the active marker (centroid retained)."""
+
+    bl_idname = "mesh2marker.link_vertices"
+    bl_label = "Link selected vertices to marker"
+    bl_description = "Link the selected MHR_body vertices to the active marker"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        props = context.scene.mesh2marker
+        marker_name = _active_marker_name(props)
+        if not marker_name:
+            self.report({"ERROR"}, "No active marker (load a model and pick one)")
+            return {"CANCELLED"}
+
+        obj = bpy.data.objects.get(MHR_OBJECT_NAME)
+        if obj is None or obj.type != "MESH":
+            self.report({"ERROR"}, f"{MHR_OBJECT_NAME!r} not found")
+            return {"CANCELLED"}
+        if obj.mode != "EDIT":
+            self.report({"ERROR"}, "Enter Edit Mode on MHR_body and select vertices")
+            return {"CANCELLED"}
+
+        bm = bmesh.from_edit_mesh(obj.data)
+        bm.verts.ensure_lookup_table()
+        selected = [v.index for v in bm.verts if v.select]
+        if not selected:
+            self.report({"ERROR"}, "No vertices selected")
+            return {"CANCELLED"}
+        coords = [None] * len(bm.verts)
+        for vert in bm.verts:
+            coords[vert.index] = (vert.co.x, vert.co.y, vert.co.z)
+
+        # The centroid choice and ordering come from the core.
+        _reload_core()
+        from mesh2marker.linking import ordered_indices
+
+        ordered = ordered_indices(coords, selected)
+        csv = ",".join(str(i) for i in ordered)
+
+        _, item = _find_link_item(props, marker_name)
+        if item is None:
+            item = props.links.add()
+            item.marker_name = marker_name
+        item.vertex_indices = csv
+
+        self.report({"INFO"}, f"Linked {marker_name}: {len(ordered)} vertex(es)")
+        return {"FINISHED"}
+
+
+class MESH2MARKER_OT_unlink_marker(Operator):
+    """Remove the link of the active marker."""
+
+    bl_idname = "mesh2marker.unlink_marker"
+    bl_label = "Unlink marker"
+    bl_description = "Remove the vertex link of the active marker"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        props = context.scene.mesh2marker
+        marker_name = _active_marker_name(props)
+        if not marker_name:
+            self.report({"ERROR"}, "No active marker")
+            return {"CANCELLED"}
+        idx, item = _find_link_item(props, marker_name)
+        if item is None:
+            self.report({"WARNING"}, f"{marker_name} is not linked")
+            return {"CANCELLED"}
+        props.links.remove(idx)
+        self.report({"INFO"}, f"Unlinked {marker_name}")
+        return {"FINISHED"}
+
+
+class MESH2MARKER_OT_select_linked(Operator):
+    """Re-select the MHR_body vertices linked to the active marker (Edit Mode)."""
+
+    bl_idname = "mesh2marker.select_linked"
+    bl_label = "Select linked vertices"
+    bl_description = "Select the vertices linked to the active marker"
+    bl_options = {"REGISTER"}
+
+    def execute(self, context):
+        props = context.scene.mesh2marker
+        marker_name = _active_marker_name(props)
+        if not marker_name:
+            self.report({"ERROR"}, "No active marker")
+            return {"CANCELLED"}
+        _, item = _find_link_item(props, marker_name)
+        if item is None or not item.vertex_indices:
+            self.report({"WARNING"}, f"{marker_name} is not linked")
+            return {"CANCELLED"}
+
+        obj = bpy.data.objects.get(MHR_OBJECT_NAME)
+        if obj is None or obj.type != "MESH":
+            self.report({"ERROR"}, f"{MHR_OBJECT_NAME!r} not found")
+            return {"CANCELLED"}
+        if obj.mode != "EDIT":
+            self.report({"ERROR"}, "Enter Edit Mode on MHR_body first")
+            return {"CANCELLED"}
+
+        indices = [int(s) for s in item.vertex_indices.split(",") if s]
+        bm = bmesh.from_edit_mesh(obj.data)
+        bm.verts.ensure_lookup_table()
+        for vert in bm.verts:
+            vert.select = False
+        n = len(bm.verts)
+        for i in indices:
+            if 0 <= i < n:
+                bm.verts[i].select = True
+        bm.select_flush(True)
+        bmesh.update_edit_mesh(obj.data)
+        self.report({"INFO"}, f"Selected {len(indices)} vertex(es) for {marker_name}")
+        return {"FINISHED"}
+
+
 class MESH2MARKER_PT_panel(Panel):
     bl_label = "Mesh2Marker"
     bl_idname = "MESH2MARKER_PT_panel"
@@ -442,13 +609,39 @@ class MESH2MARKER_PT_panel(Panel):
         col.prop(props, "mesh_alpha", slider=True)
         col.operator(MESH2MARKER_OT_toggle_transparency.bl_idname, icon="XRAY")
 
+        layout.separator()
+
+        col = layout.column(align=True)
+        col.label(text="Markers")
+        col.template_list(
+            "MESH2MARKER_UL_markers",
+            "",
+            props,
+            "marker_names",
+            props,
+            "active_marker_index",
+            rows=6,
+        )
+        row = col.row(align=True)
+        row.operator(MESH2MARKER_OT_link_vertices.bl_idname, icon="LINKED")
+        row.operator(MESH2MARKER_OT_unlink_marker.bl_idname, icon="UNLINKED")
+        col.operator(
+            MESH2MARKER_OT_select_linked.bl_idname, icon="RESTRICT_SELECT_OFF"
+        )
+
 
 _CLASSES = (
+    MarkerNameItem,
+    MarkerLinkItem,
     Mesh2MarkerProperties,
     MESH2MARKER_OT_load_mhr,
     MESH2MARKER_OT_load_opensim,
     MESH2MARKER_OT_align_mhr,
     MESH2MARKER_OT_toggle_transparency,
+    MESH2MARKER_UL_markers,
+    MESH2MARKER_OT_link_vertices,
+    MESH2MARKER_OT_unlink_marker,
+    MESH2MARKER_OT_select_linked,
     MESH2MARKER_PT_panel,
 )
 
