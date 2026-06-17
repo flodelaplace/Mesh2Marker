@@ -24,11 +24,11 @@ from __future__ import annotations
 
 import numpy as np
 
-from .alignment import align_mhr_to_opensim
-from .kinematics import joint_centers
+from .alignment import align_mhr_to_opensim, similarity_to_matrix
+from .kinematics import forward_kinematics, joint_centers
 from .mhr import MhrSample
 from .osim import OsimModel
-from .procrustes import SimilarityTransform
+from .procrustes import SimilarityTransform, procrustes_align
 
 # body -> (proximal OpenSim joint, distal OpenSim joint, proximal MHR kp, distal kp)
 SEGMENT_TABLE: dict[str, tuple[str, str, int, int]] = {
@@ -55,9 +55,40 @@ INHERIT: dict[str, str] = {
     "talus_l": "tibia_l",
     "calcn_l": "tibia_l",
     "toes_l": "tibia_l",
-    "hand_r": "radius_r",
-    "hand_l": "radius_l",
 }
+
+# Bodies aligned by a full Procrustes fit on >=3 landmark pairs (MHR keypoint <->
+# OpenSim marker). This recovers the full orientation (roll included), which the
+# 2-point long-bone fit cannot, and constrains the head (an extremity with no distal
+# joint). Each entry: body -> [(MHR keypoint index, OpenSim marker name), ...].
+LANDMARK_SEGMENTS: dict[str, list[tuple[int, str]]] = {
+    "head": [
+        (0, "Nose"),
+        (1, "LEye"),
+        (2, "REye"),
+        (3, "LEar"),
+        (4, "REar"),
+    ],
+    "hand_r": [
+        (41, "RWrist_hand"),
+        (24, "RThumb"),
+        (28, "RIndex"),
+        (40, "RPinky"),
+        (25, "RIndexTip"),
+        (37, "RPinkyTip"),
+    ],
+    "hand_l": [
+        (62, "LWrist_hand"),
+        (45, "LThumb"),
+        (49, "LIndex"),
+        (61, "LPinky"),
+        (46, "LIndexTip"),
+        (58, "LPinkyTip"),
+    ],
+}
+
+# Procrustes needs at least 3 non-degenerate correspondences.
+LANDMARK_MIN_PAIRS = 3
 
 
 def minimal_rotation(a: np.ndarray, b: np.ndarray) -> np.ndarray:
@@ -123,10 +154,13 @@ def compute_segment_transforms(
 ) -> dict[str, np.ndarray]:
     """One per-body similarity correction (4x4, OpenSim world frame) for every body.
 
-    Long bones are fit end-to-end (joint centre to joint centre); listed children
-    inherit their ancestor's correction; the trunk and any uncovered body get the
-    identity. ``global_transform`` maps MHR keypoints into the OpenSim world frame;
-    if omitted it is computed via :func:`align_mhr_to_opensim`.
+    Long bones are fit end-to-end (joint centre to joint centre); extremities listed
+    in :data:`LANDMARK_SEGMENTS` (head, hands) get a full Procrustes fit on >=3
+    landmark pairs, which recovers the roll the 2-point fit cannot and overrides any
+    inherited/identity value; remaining listed children inherit their ancestor's
+    correction; the trunk and any uncovered body get the identity. ``global_transform``
+    maps MHR keypoints into the OpenSim world frame; if omitted it is computed via
+    :func:`align_mhr_to_opensim`.
     """
     if global_transform is None:
         global_transform, _, _ = align_mhr_to_opensim(sample, model)
@@ -154,9 +188,38 @@ def compute_segment_transforms(
         if matrix is not None:
             transforms[body] = matrix
 
-    for body, source in INHERIT.items():
-        if source in transforms:
-            transforms[body] = transforms[source].copy()
+    # Full Procrustes for extremities (head, hands) on landmark pairs. These
+    # override any inherited/identity value for the listed bodies.
+    world = forward_kinematics(model)
+    marker_world: dict[str, np.ndarray] = {}
+    for marker in model.markers:
+        body_world = world.get(marker.parent_body)
+        if body_world is None:
+            continue
+        loc = np.asarray(marker.location, dtype=float)
+        marker_world[marker.name] = body_world.rotation @ loc + body_world.translation
+
+    for body, pairs in LANDMARK_SEGMENTS.items():
+        source: list[np.ndarray] = []
+        target: list[np.ndarray] = []
+        for kp_idx, marker_name in pairs:
+            if marker_name not in marker_world:
+                continue
+            if not (0 <= kp_idx < n_kp):
+                continue
+            source.append(marker_world[marker_name])
+            target.append(kp_world(kp_idx))
+        if len(source) >= LANDMARK_MIN_PAIRS:
+            fit = procrustes_align(
+                np.asarray(source, dtype=float),
+                np.asarray(target, dtype=float),
+                with_scale=True,
+            )
+            transforms[body] = similarity_to_matrix(fit)
+
+    for body, source_body in INHERIT.items():
+        if source_body in transforms:
+            transforms[body] = transforms[source_body].copy()
 
     # Every body of the model gets a correction; trunk and uncovered -> identity.
     for body in model.bodies:

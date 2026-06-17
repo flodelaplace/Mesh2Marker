@@ -6,12 +6,23 @@ import numpy as np
 import pytest
 
 from mesh2marker.alignment import align_mhr_to_opensim
-from mesh2marker.kinematics import joint_centers
+from mesh2marker.kinematics import (
+    euler_xyz_to_matrix,
+    forward_kinematics,
+    joint_centers,
+)
 from mesh2marker.mhr import MhrSample
-from mesh2marker.osim import OsimBody, OsimFrameOffset, OsimJoint, OsimModel
+from mesh2marker.osim import (
+    OsimBody,
+    OsimFrameOffset,
+    OsimJoint,
+    OsimMarker,
+    OsimModel,
+)
 from mesh2marker.procrustes import SimilarityTransform
 from mesh2marker.segment_align import (
     INHERIT,
+    LANDMARK_SEGMENTS,
     SEGMENT_TABLE,
     compute_segment_transforms,
     minimal_rotation,
@@ -131,6 +142,56 @@ def test_segment_maps_joint_centers_onto_keypoints():
     np.testing.assert_array_equal(transforms["patella_r"], femur)
 
 
+def _head_model(marker_positions: dict) -> OsimModel:
+    # head hangs off ground with identity offset, so world[head] is identity and a
+    # marker's world position equals its location.
+    body = OsimBody("head", [])
+    joint = _joint("neck", "ground", "head", [0, 0, 0])
+    markers = [
+        OsimMarker(name, "head", list(pos)) for name, pos in marker_positions.items()
+    ]
+    return OsimModel(name="headmodel", bodies=[body], joints=[joint], markers=markers)
+
+
+def test_head_landmark_recovers_similarity():
+    rng = np.random.default_rng(7)
+    names = ["Nose", "LEye", "REye", "LEar", "REar"]
+    indices = [0, 1, 2, 3, 4]
+    points = {name: rng.normal(size=3) for name in names}
+    rot = euler_xyz_to_matrix([0.3, -0.4, 0.7])
+    scale = 1.3
+    trans = np.array([0.2, -0.1, 0.5])
+    kps = {
+        idx: scale * rot @ points[name] + trans
+        for idx, name in zip(indices, names, strict=True)
+    }
+
+    sample = _sample_with_kps(kps)
+    model = _head_model(points)
+    transforms = compute_segment_transforms(
+        sample, model, global_transform=_identity_similarity()
+    )
+
+    head = transforms["head"]
+    for idx, name in zip(indices, names, strict=True):
+        target = np.asarray(
+            _identity_similarity().apply(np.asarray(sample.keypoints[idx], dtype=float))
+        )
+        np.testing.assert_allclose(_apply(head, points[name]), target, atol=1e-6)
+
+
+def test_head_landmark_skipped_below_min_pairs():
+    rng = np.random.default_rng(8)
+    points = {"Nose": rng.normal(size=3), "LEye": rng.normal(size=3)}  # only 2 markers
+    sample = _sample_with_kps({0: [1.0, 2.0, 3.0], 1: [4.0, 5.0, 6.0]})
+    model = _head_model(points)
+    transforms = compute_segment_transforms(
+        sample, model, global_transform=_identity_similarity()
+    )
+    # Fewer than 3 pairs: head is not overwritten, stays identity.
+    np.testing.assert_allclose(transforms["head"], np.eye(4), atol=1e-12)
+
+
 def test_every_body_has_a_correction():
     model = _femur_test_model()
     sample = _sample_with_kps({10: [1.0, 2.0, 3.0], 12: [1.0, 1.0, 3.0]})
@@ -175,3 +236,57 @@ def test_real_segment_transforms():
     # Inheritance is wired correctly.
     for child, source in INHERIT.items():
         np.testing.assert_array_equal(transforms[child], transforms[source])
+
+
+@pytest.mark.skipif(
+    not (REAL_NPZ.exists() and REAL_OSIM.exists()),
+    reason="real npz/osim not present (CI / clean checkout)",
+)
+def test_real_landmark_extremities():
+    from mesh2marker.mhr import load_mhr_npz
+    from mesh2marker.osim import parse_osim
+
+    sample = load_mhr_npz(REAL_NPZ)
+    model = parse_osim(REAL_OSIM)
+    global_transform, _, _ = align_mhr_to_opensim(sample, model)
+    transforms = compute_segment_transforms(sample, model, global_transform)
+
+    # Extremities get a non-identity Procrustes correction.
+    for body in ("head", "hand_r", "hand_l"):
+        assert body in transforms
+        assert not np.allclose(transforms[body], np.eye(4))
+
+    # Hands are no longer mere copies of the forearm (radius) transform.
+    assert not np.array_equal(transforms["hand_r"], transforms["radius_r"])
+    assert not np.array_equal(transforms["hand_l"], transforms["radius_l"])
+
+    # Per-extremity Procrustes residual is finite and reasonable.
+    world = forward_kinematics(model)
+    marker_world = {
+        m.name: world[m.parent_body].rotation @ np.asarray(m.location, dtype=float)
+        + world[m.parent_body].translation
+        for m in model.markers
+        if m.parent_body in world
+    }
+    n_kp = sample.keypoints.shape[0]
+    for body in ("head", "hand_r", "hand_l"):
+        matrix = transforms[body]
+        source = []
+        target = []
+        for kp_idx, marker_name in LANDMARK_SEGMENTS[body]:
+            if marker_name in marker_world and 0 <= kp_idx < n_kp:
+                source.append(marker_world[marker_name])
+                target.append(
+                    np.asarray(
+                        global_transform.apply(
+                            np.asarray(sample.keypoints[kp_idx], dtype=float)
+                        )
+                    )
+                )
+        source = np.asarray(source)
+        target = np.asarray(target)
+        assert len(source) >= 3
+        aligned = (matrix[:3, :3] @ source.T).T + matrix[:3, 3]
+        residual = float(np.sqrt(np.mean(np.sum((aligned - target) ** 2, axis=1))))
+        assert np.isfinite(residual)
+        assert residual < 0.1
