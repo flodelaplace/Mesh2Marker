@@ -15,6 +15,48 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from .markers import marker_world_positions
+from .osim import OsimModel
+from .procrustes import SimilarityTransform
+
+
+def nearest_vertex(verts: np.ndarray, point: np.ndarray) -> int:
+    """Index of the vertex closest to ``point`` (Euclidean). ValueError if empty."""
+    verts = np.asarray(verts, dtype=float)
+    if verts.shape[0] == 0:
+        raise ValueError("verts must not be empty")
+    point = np.asarray(point, dtype=float)
+    return int(np.argmin(np.linalg.norm(verts - point, axis=1)))
+
+
+def auto_link_markers(
+    model: OsimModel,
+    verts: np.ndarray,
+    global_transform: SimilarityTransform,
+    seg_transforms: dict[str, np.ndarray] | None = None,
+) -> dict[str, int]:
+    """Propose, for each marker, the nearest MHR vertex (a starting map to refine).
+
+    Frames: the mesh is in the MHR frame and the markers in the OpenSim world frame,
+    so we compare in one frame. The vertices are lifted into the OpenSim world via
+    ``global_transform``; marker positions come from
+    :func:`mesh2marker.markers.marker_world_positions` (which applies the per-segment
+    correction, itself expressed in that same OpenSim world frame). Returns
+    ``{marker_name: vertex_index}``.
+
+    Limitation: this is a GLOBAL nearest-vertex search over all vertices. Under a poor
+    alignment a marker could grab a vertex of another segment; the user fixes such
+    cases by hand (5b overrides the proposal). No per-segment restriction in v1.
+    """
+    verts_world = np.asarray(
+        global_transform.apply(np.asarray(verts, dtype=float)), dtype=float
+    )
+    positions = marker_world_positions(model, seg_transforms=seg_transforms)
+    return {
+        name: nearest_vertex(verts_world, position)
+        for name, position in positions.items()
+    }
+
 
 def centroid_vertex(verts: np.ndarray, indices: list[int]) -> int:
     """Index (among ``indices``) of the vertex closest to their centroid.

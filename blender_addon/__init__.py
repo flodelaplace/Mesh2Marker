@@ -639,6 +639,69 @@ class MESH2MARKER_OT_select_linked(Operator):
         return {"FINISHED"}
 
 
+class MESH2MARKER_OT_auto_link(Operator):
+    """Auto-link every still-unlinked marker to its nearest MHR skin vertex."""
+
+    bl_idname = "mesh2marker.auto_link"
+    bl_label = "Auto-link all markers"
+    bl_description = (
+        "Propose the nearest mesh vertex for each marker that has no link yet "
+        "(existing links are kept)"
+    )
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        props = context.scene.mesh2marker
+        npz_path = bpy.path.abspath(props.npz_path.strip()) if props.npz_path else ""
+        osim_path = bpy.path.abspath(props.osim_path.strip()) if props.osim_path else ""
+        if not npz_path:
+            self.report({"ERROR"}, "NPZ path is empty")
+            return {"CANCELLED"}
+        if not osim_path:
+            self.report({"ERROR"}, "OSIM path is empty")
+            return {"CANCELLED"}
+
+        # All computation comes from the core.
+        _reload_core()
+        from mesh2marker.alignment import align_mhr_to_opensim
+        from mesh2marker.linking import auto_link_markers
+        from mesh2marker.mhr import load_mhr_npz
+        from mesh2marker.osim import parse_osim
+        from mesh2marker.segment_align import compute_segment_transforms
+
+        try:
+            sample = load_mhr_npz(npz_path)
+            model = parse_osim(osim_path)
+            global_transform, _, _ = align_mhr_to_opensim(sample, model)
+            seg_transforms = compute_segment_transforms(
+                sample, model, global_transform
+            )
+            proposed = auto_link_markers(
+                model, sample.verts, global_transform, seg_transforms
+            )
+        except (OSError, ValueError) as exc:
+            self.report({"ERROR"}, f"Auto-link failed: {exc}")
+            return {"CANCELLED"}
+
+        new_count = 0
+        kept = 0
+        for marker_name, vertex_index in proposed.items():
+            _, item = _find_link_item(props, marker_name)
+            if item is not None:  # preserve manual refinement / prior links
+                kept += 1
+                continue
+            item = props.links.add()
+            item.marker_name = marker_name
+            item.vertex_indices = str(int(vertex_index))
+            new_count += 1
+
+        highlight_active_marker(context)
+        self.report(
+            {"INFO"}, f"Auto-linked {new_count} markers, kept {kept} existing"
+        )
+        return {"FINISHED"}
+
+
 class MESH2MARKER_OT_enter_picking(Operator):
     """Edit MHR_body in vertex mode with X-ray; make the skeleton unselectable."""
 
@@ -743,6 +806,7 @@ class MESH2MARKER_PT_panel(Panel):
             "active_marker_index",
             rows=6,
         )
+        col.operator(MESH2MARKER_OT_auto_link.bl_idname, icon="FILE_REFRESH")
         row = col.row(align=True)
         row.operator(MESH2MARKER_OT_enter_picking.bl_idname, icon="EDITMODE_HLT")
         row.operator(MESH2MARKER_OT_exit_picking.bl_idname, icon="OBJECT_DATAMODE")
@@ -767,6 +831,7 @@ _CLASSES = (
     MESH2MARKER_OT_align_mhr,
     MESH2MARKER_OT_toggle_transparency,
     MESH2MARKER_UL_markers,
+    MESH2MARKER_OT_auto_link,
     MESH2MARKER_OT_enter_picking,
     MESH2MARKER_OT_exit_picking,
     MESH2MARKER_OT_link_vertices,
