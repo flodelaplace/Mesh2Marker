@@ -25,7 +25,8 @@ from __future__ import annotations
 import numpy as np
 
 from .alignment import align_mhr_to_opensim, similarity_to_matrix
-from .kinematics import forward_kinematics, joint_centers
+from .kinematics import joint_centers
+from .markers import neutral_marker_world_positions
 from .mhr import MhrSample
 from .osim import OsimModel
 from .procrustes import SimilarityTransform, procrustes_align
@@ -190,14 +191,7 @@ def compute_segment_transforms(
 
     # Full Procrustes for extremities (head, hands) on landmark pairs. These
     # override any inherited/identity value for the listed bodies.
-    world = forward_kinematics(model)
-    marker_world: dict[str, np.ndarray] = {}
-    for marker in model.markers:
-        body_world = world.get(marker.parent_body)
-        if body_world is None:
-            continue
-        loc = np.asarray(marker.location, dtype=float)
-        marker_world[marker.name] = body_world.rotation @ loc + body_world.translation
+    marker_world = neutral_marker_world_positions(model)
 
     for body, pairs in LANDMARK_SEGMENTS.items():
         source: list[np.ndarray] = []

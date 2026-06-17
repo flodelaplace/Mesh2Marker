@@ -49,13 +49,75 @@ def _reload_core() -> None:
 
 _ensure_core_on_path()
 
+import bmesh  # noqa: E402
 import bpy  # noqa: E402 (must follow the sys.path shim above)
 import mathutils  # noqa: E402
-from bpy.props import BoolProperty, PointerProperty, StringProperty  # noqa: E402
+from bpy.props import (  # noqa: E402
+    BoolProperty,
+    FloatProperty,
+    PointerProperty,
+    StringProperty,
+)
 from bpy.types import Operator, Panel, PropertyGroup  # noqa: E402
 
 MHR_OBJECT_NAME = "MHR_body"
 OPENSIM_COLLECTION_NAME = "OpenSim_model"
+MARKERS_COLLECTION_NAME = "markers"
+MHR_TRANSPARENT_MATERIAL = "MHR_body_transparent"
+MARKER_MATERIAL = "Mesh2Marker_marker"
+
+
+def _transparent_material(alpha: float):
+    """Get/create the MHR transparency material and set its alpha."""
+    mat = bpy.data.materials.get(MHR_TRANSPARENT_MATERIAL) or bpy.data.materials.new(
+        MHR_TRANSPARENT_MATERIAL
+    )
+    mat.use_nodes = True
+    bsdf = mat.node_tree.nodes.get("Principled BSDF")
+    if bsdf is not None:
+        bsdf.inputs["Alpha"].default_value = alpha
+    if hasattr(mat, "blend_method"):
+        mat.blend_method = "BLEND"
+    if hasattr(mat, "show_transparent_back"):
+        mat.show_transparent_back = False
+    return mat
+
+
+def _update_mesh_alpha(self, context):
+    """Live-apply the alpha slider when MHR_body is currently transparent."""
+    obj = bpy.data.objects.get(MHR_OBJECT_NAME)
+    if obj is None:
+        return
+    active = obj.active_material
+    if active is None or active.name != MHR_TRANSPARENT_MATERIAL:
+        return
+    bsdf = active.node_tree.nodes.get("Principled BSDF")
+    if bsdf is not None:
+        bsdf.inputs["Alpha"].default_value = self.mesh_alpha
+
+
+def _marker_material():
+    """Get/create the distinct (red) material for marker spheres."""
+    mat = bpy.data.materials.get(MARKER_MATERIAL) or bpy.data.materials.new(
+        MARKER_MATERIAL
+    )
+    mat.use_nodes = True
+    bsdf = mat.node_tree.nodes.get("Principled BSDF")
+    if bsdf is not None:
+        bsdf.inputs["Base Color"].default_value = (0.9, 0.05, 0.05, 1.0)
+    mat.diffuse_color = (0.9, 0.05, 0.05, 1.0)  # solid-view colour
+    return mat
+
+
+def _marker_sphere_mesh(radius: float):
+    """Build one small UV-sphere mesh datablock shared by all marker objects."""
+    bm = bmesh.new()
+    bmesh.ops.create_uvsphere(bm, u_segments=8, v_segments=6, radius=radius)
+    mesh = bpy.data.meshes.new("Mesh2Marker_marker_sphere")
+    bm.to_mesh(mesh)
+    bm.free()
+    mesh.materials.append(_marker_material())
+    return mesh
 
 
 class Mesh2MarkerProperties(PropertyGroup):
@@ -84,6 +146,14 @@ class Mesh2MarkerProperties(PropertyGroup):
             "(needs the NPZ path). When off, segments are placed in the neutral pose"
         ),
         default=True,
+    )
+    mesh_alpha: FloatProperty(
+        name="Mesh alpha",
+        description="MHR_body transparency (lower = more see-through; Material Preview)",
+        default=0.25,
+        min=0.05,
+        max=1.0,
+        update=_update_mesh_alpha,
     )
 
 
@@ -200,6 +270,10 @@ class MESH2MARKER_OT_load_opensim(Operator):
         # Replace any previous import so reloads do not pile up duplicates.
         old = bpy.data.collections.get(OPENSIM_COLLECTION_NAME)
         if old is not None:
+            for child in list(old.children):  # e.g. the markers sub-collection
+                for obj in list(child.objects):
+                    bpy.data.objects.remove(obj, do_unlink=True)
+                bpy.data.collections.remove(child)
             for obj in list(old.objects):
                 bpy.data.objects.remove(obj, do_unlink=True)
             bpy.data.collections.remove(old)
@@ -232,7 +306,27 @@ class MESH2MARKER_OT_load_opensim(Operator):
                     obj.matrix_world = final
                 n_segments += 1
 
-        self.report({"INFO"}, f"Loaded OpenSim model: {n_segments} segments")
+        # Marker spheres, placed by the same per-segment chain as the geometry.
+        n_markers = 0
+        if seg_transforms is not None:
+            from mesh2marker.markers import marker_world_positions
+
+            positions = marker_world_positions(model, seg_transforms)
+            markers_coll = bpy.data.collections.new(MARKERS_COLLECTION_NAME)
+            collection.children.link(markers_coll)
+            sphere_mesh = _marker_sphere_mesh(0.01)
+            for name, pos in positions.items():
+                marker_obj = bpy.data.objects.new(f"marker_{name}", sphere_mesh)
+                markers_coll.objects.link(marker_obj)
+                marker_obj.matrix_world = conversion @ mathutils.Matrix.Translation(
+                    (float(pos[0]), float(pos[1]), float(pos[2]))
+                )
+                n_markers += 1
+
+        self.report(
+            {"INFO"},
+            f"Loaded OpenSim model: {n_segments} segments, {n_markers} markers",
+        )
         return {"FINISHED"}
 
 
@@ -305,8 +399,6 @@ class MESH2MARKER_OT_toggle_transparency(Operator):
     )
     bl_options = {"REGISTER", "UNDO"}
 
-    _MATERIAL_NAME = "MHR_body_transparent"
-
     def execute(self, context):
         obj = bpy.data.objects.get(MHR_OBJECT_NAME)
         if obj is None:
@@ -316,25 +408,13 @@ class MESH2MARKER_OT_toggle_transparency(Operator):
             return {"CANCELLED"}
 
         active = obj.active_material
-        if active is not None and active.name == self._MATERIAL_NAME:
+        if active is not None and active.name == MHR_TRANSPARENT_MATERIAL:
             obj.data.materials.clear()
             self.report({"INFO"}, "MHR mesh opaque")
             return {"FINISHED"}
 
-        mat = bpy.data.materials.get(self._MATERIAL_NAME) or bpy.data.materials.new(
-            self._MATERIAL_NAME
-        )
-        mat.use_nodes = True
-        bsdf = mat.node_tree.nodes.get("Principled BSDF")
-        if bsdf is not None:
-            bsdf.inputs["Alpha"].default_value = 0.4
-        if hasattr(mat, "blend_method"):
-            mat.blend_method = "BLEND"
-        if hasattr(mat, "show_transparent_back"):
-            mat.show_transparent_back = False
-
         obj.data.materials.clear()
-        obj.data.materials.append(mat)
+        obj.data.materials.append(_transparent_material(context.scene.mesh2marker.mesh_alpha))
         self.report({"INFO"}, "MHR mesh semi-transparent (see it in Material Preview)")
         return {"FINISHED"}
 
@@ -374,6 +454,7 @@ class MESH2MARKER_PT_panel(Panel):
 
         col = layout.column(align=True)
         col.label(text="Display")
+        col.prop(props, "mesh_alpha", slider=True)
         col.operator(MESH2MARKER_OT_toggle_transparency.bl_idname, icon="XRAY")
 
 
