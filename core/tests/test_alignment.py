@@ -61,6 +61,24 @@ def _model_with_centers(centers_by_joint: dict) -> OsimModel:
     return OsimModel(name="synthetic", bodies=bodies, joints=joints, markers=[])
 
 
+def test_pairs_are_stable_joints_only():
+    # 8 stable pairs: hips, knees, ankles, shoulder centres. Elbows/wrists are
+    # excluded because arm pose varies between MHR rest pose and OpenSim neutral.
+    assert len(MHR_KP_TO_OSIM_JOINT) == 8
+    joints = set(MHR_KP_TO_OSIM_JOINT.values())
+    assert joints == {
+        "hip_r",
+        "hip_l",
+        "walker_knee_r",
+        "walker_knee_l",
+        "ankle_r",
+        "ankle_l",
+        "acromial_r",
+        "acromial_l",
+    }
+    assert not any("elbow" in j or "radius" in j for j in joints)
+
+
 def test_build_clouds_pairs_all_present():
     keypoints = np.random.default_rng(0).normal(size=(70, 3))
     centers = {name: keypoints[idx] for idx, name in MHR_KP_TO_OSIM_JOINT.items()}

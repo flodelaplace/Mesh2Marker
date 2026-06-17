@@ -21,6 +21,12 @@ from .procrustes import SimilarityTransform, procrustes_align
 # MHR-70 keypoint index -> Pose2Sim_Wholebody joint name. Keypoint indices follow
 # the mhr70 layout; joint names are those exposed by OsimModel for the
 # Pose2Sim_Wholebody model.
+#
+# The rigid+scale pre-alignment uses only STABLE joints that barely depend on limb
+# pose: the lower body (hips, knees, ankles) plus the shoulder centres. Elbows and
+# wrists are deliberately excluded because arm pose varies a lot (e.g. the MHR mesh
+# rest pose is an A/T-pose with raised arms vs the OpenSim neutral pose with arms
+# down), which would skew the fit. This leaves 8 pairs.
 MHR_KP_TO_OSIM_JOINT: dict[int, str] = {
     10: "hip_r",
     9: "hip_l",
@@ -30,8 +36,6 @@ MHR_KP_TO_OSIM_JOINT: dict[int, str] = {
     13: "ankle_l",
     6: "acromial_r",
     5: "acromial_l",
-    8: "elbow_r",
-    7: "elbow_l",
 }
 
 # Procrustes needs enough non-degenerate correspondences for a stable fit.
