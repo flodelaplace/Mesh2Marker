@@ -63,37 +63,27 @@ from bpy.types import Operator, Panel, PropertyGroup  # noqa: E402
 MHR_OBJECT_NAME = "MHR_body"
 OPENSIM_COLLECTION_NAME = "OpenSim_model"
 MARKERS_COLLECTION_NAME = "markers"
-MHR_TRANSPARENT_MATERIAL = "MHR_body_transparent"
 MARKER_MATERIAL = "Mesh2Marker_marker"
 
 
-def _transparent_material(alpha: float):
-    """Get/create the MHR transparency material and set its alpha."""
-    mat = bpy.data.materials.get(MHR_TRANSPARENT_MATERIAL) or bpy.data.materials.new(
-        MHR_TRANSPARENT_MATERIAL
-    )
-    mat.use_nodes = True
-    bsdf = mat.node_tree.nodes.get("Principled BSDF")
-    if bsdf is not None:
-        bsdf.inputs["Alpha"].default_value = alpha
-    if hasattr(mat, "blend_method"):
-        mat.blend_method = "BLEND"
-    if hasattr(mat, "show_transparent_back"):
-        mat.show_transparent_back = False
-    return mat
+def _find_view3d_shading(context):
+    """Return the shading settings of the first 3D viewport, or None if absent."""
+    screen = getattr(context, "screen", None)
+    if screen is None:
+        return None
+    for area in screen.areas:
+        if area.type == "VIEW_3D":
+            space = area.spaces.active
+            if space is not None:
+                return space.shading
+    return None
 
 
 def _update_mesh_alpha(self, context):
-    """Live-apply the alpha slider when MHR_body is currently transparent."""
-    obj = bpy.data.objects.get(MHR_OBJECT_NAME)
-    if obj is None:
-        return
-    active = obj.active_material
-    if active is None or active.name != MHR_TRANSPARENT_MATERIAL:
-        return
-    bsdf = active.node_tree.nodes.get("Principled BSDF")
-    if bsdf is not None:
-        bsdf.inputs["Alpha"].default_value = self.mesh_alpha
+    """Live-apply the slider to the viewport X-ray alpha when X-ray is on."""
+    shading = _find_view3d_shading(context)
+    if shading is not None and shading.show_xray:
+        shading.xray_alpha = self.mesh_alpha
 
 
 def _marker_material():
@@ -149,7 +139,7 @@ class Mesh2MarkerProperties(PropertyGroup):
     )
     mesh_alpha: FloatProperty(
         name="Mesh alpha",
-        description="MHR_body transparency (lower = more see-through; Material Preview)",
+        description="Viewport X-ray transparency, lower = more see-through",
         default=0.25,
         min=0.05,
         max=1.0,
@@ -389,33 +379,28 @@ class MESH2MARKER_OT_align_mhr(Operator):
 
 
 class MESH2MARKER_OT_toggle_transparency(Operator):
-    """Toggle the MHR body between opaque and semi-transparent (see bones through skin)."""
+    """Toggle viewport X-ray so bones and markers show through the skin (Solid mode)."""
 
     bl_idname = "mesh2marker.toggle_transparency"
     bl_label = "Toggle mesh transparency"
     bl_description = (
-        "Make MHR_body semi-transparent so bones show through the skin "
-        "(visible in Material Preview / Rendered). Click again to restore opacity"
+        "Toggle viewport X-ray: see (and select) through the mesh in Solid mode. "
+        "Dose it with the Mesh alpha slider"
     )
-    bl_options = {"REGISTER", "UNDO"}
+    bl_options = {"REGISTER"}
 
     def execute(self, context):
-        obj = bpy.data.objects.get(MHR_OBJECT_NAME)
-        if obj is None:
-            self.report(
-                {"ERROR"}, f"{MHR_OBJECT_NAME!r} not found; load the MHR mesh first"
-            )
+        shading = _find_view3d_shading(context)
+        if shading is None:
+            self.report({"ERROR"}, "No 3D viewport found")
             return {"CANCELLED"}
 
-        active = obj.active_material
-        if active is not None and active.name == MHR_TRANSPARENT_MATERIAL:
-            obj.data.materials.clear()
-            self.report({"INFO"}, "MHR mesh opaque")
-            return {"FINISHED"}
-
-        obj.data.materials.clear()
-        obj.data.materials.append(_transparent_material(context.scene.mesh2marker.mesh_alpha))
-        self.report({"INFO"}, "MHR mesh semi-transparent (see it in Material Preview)")
+        shading.show_xray = not shading.show_xray
+        if shading.show_xray:
+            shading.xray_alpha = context.scene.mesh2marker.mesh_alpha
+            self.report({"INFO"}, "Viewport X-ray on (dose with Mesh alpha)")
+        else:
+            self.report({"INFO"}, "Viewport X-ray off")
         return {"FINISHED"}
 
 
