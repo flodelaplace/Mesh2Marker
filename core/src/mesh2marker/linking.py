@@ -15,9 +15,80 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from .kinematics import forward_kinematics
 from .markers import marker_world_positions
 from .osim import OsimModel
 from .procrustes import SimilarityTransform
+
+
+def vertex_world_position(
+    verts: np.ndarray, idx: int, global_transform: SimilarityTransform
+) -> np.ndarray:
+    """World position (OpenSim frame) of vertex ``idx``: ``global_transform.apply``."""
+    verts = np.asarray(verts, dtype=float)
+    n = verts.shape[0]
+    if not (0 <= idx < n):
+        raise ValueError(f"vertex index {idx} out of range [0, {n})")
+    return np.asarray(global_transform.apply(verts[idx]), dtype=float)
+
+
+def _segment_world_matrix(
+    model: OsimModel,
+    marker_name: str,
+    seg_transforms: dict[str, np.ndarray] | None,
+) -> np.ndarray:
+    """4x4 mapping a marker's local point to world: seg[parent] @ world[parent]."""
+    parent = next(
+        (m.parent_body for m in model.markers if m.name == marker_name), None
+    )
+    if parent is None:
+        raise ValueError(f"unknown marker: {marker_name!r}")
+    world = forward_kinematics(model)
+    body_world = world.get(parent)
+    if body_world is None:
+        raise ValueError(
+            f"marker {marker_name!r} parent body {parent!r} not reachable"
+        )
+    world_m = np.eye(4)
+    world_m[:3, :3] = body_world.rotation
+    world_m[:3, 3] = body_world.translation
+    seg_m = np.eye(4)
+    if seg_transforms is not None and parent in seg_transforms:
+        seg_m = np.asarray(seg_transforms[parent], dtype=float)
+    return seg_m @ world_m
+
+
+def marker_local_from_vertex(
+    model: OsimModel,
+    marker_name: str,
+    vertex_world: np.ndarray,
+    seg_transforms: dict[str, np.ndarray] | None = None,
+) -> np.ndarray:
+    """New segment-local marker position from a world vertex position.
+
+    Inverts the segment world matrix ``M = seg_transforms[parent] @ world[parent]``
+    (FK + per-segment correction), so the result is independent of the global
+    alignment quality and of the display frame. Raises :class:`ValueError` for an
+    unknown marker.
+    """
+    matrix = _segment_world_matrix(model, marker_name, seg_transforms)
+    point = np.asarray(vertex_world, dtype=float)
+    homogeneous = np.array([point[0], point[1], point[2], 1.0])
+    local = np.linalg.inv(matrix) @ homogeneous
+    return local[:3]
+
+
+def reposition_marker_to_vertex(
+    model: OsimModel,
+    marker_name: str,
+    verts: np.ndarray,
+    vertex_index: int,
+    global_transform: SimilarityTransform,
+    seg_transforms: dict[str, np.ndarray] | None = None,
+) -> np.ndarray:
+    """New segment-local marker position so the marker sits on the linked vertex."""
+    vertex_world = vertex_world_position(verts, vertex_index, global_transform)
+    return marker_local_from_vertex(model, marker_name, vertex_world, seg_transforms)
 
 
 def nearest_vertex(verts: np.ndarray, point: np.ndarray) -> int:

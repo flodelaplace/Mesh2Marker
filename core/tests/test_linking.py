@@ -3,15 +3,19 @@
 import numpy as np
 import pytest
 
+from mesh2marker.kinematics import euler_xyz_to_matrix
 from mesh2marker.linking import (
     LinkSet,
     MarkerLink,
     auto_link_markers,
     centroid_vertex,
+    marker_local_from_vertex,
     nearest_vertex,
     ordered_indices,
+    reposition_marker_to_vertex,
     validate_against_known,
 )
+from mesh2marker.markers import marker_world_positions
 from mesh2marker.osim import OsimBody, OsimFrameOffset, OsimJoint, OsimMarker, OsimModel
 from mesh2marker.procrustes import SimilarityTransform
 
@@ -167,6 +171,64 @@ def test_auto_link_markers_identity_seg_matches_neutral():
     seg = {"B": np.eye(4)}
     result = auto_link_markers(model, verts, _identity_similarity(), seg_transforms=seg)
     assert result == {"m1": 0, "m2": 1}
+
+
+def _body_model(markers, offset_trans=(0.0, 0.0, 0.0), offset_ori=(0.0, 0.0, 0.0)):
+    body = OsimBody("B", [])
+    joint = OsimJoint(
+        name="ground_B",
+        joint_type="CustomJoint",
+        parent_body="ground",
+        child_body="B",
+        parent_offset=OsimFrameOffset(list(offset_trans), list(offset_ori)),
+        child_offset=OsimFrameOffset([0.0, 0.0, 0.0], [0.0, 0.0, 0.0]),
+        coordinates=[],
+    )
+    return OsimModel(name="m", bodies=[body], joints=[joint], markers=markers)
+
+
+def test_marker_local_from_vertex_roundtrip():
+    # Non-trivial body world (offset translation + orientation) and a non-trivial
+    # per-segment correction (scale + rotation + translation).
+    local = np.array([0.03, -0.05, 0.02])
+    model = _body_model(
+        [OsimMarker("M0", "B", list(local))],
+        offset_trans=(0.1, 0.2, 0.3),
+        offset_ori=(0.3, -0.2, 0.5),
+    )
+    seg_rot = euler_xyz_to_matrix([0.4, 0.1, -0.3])
+    seg = np.eye(4)
+    seg[:3, :3] = 1.3 * seg_rot
+    seg[:3, 3] = [0.5, -0.1, 0.2]
+    seg_transforms = {"B": seg}
+
+    # Forward chain (markers module) then inverse (linking) must return local.
+    world = marker_world_positions(model, seg_transforms=seg_transforms)["M0"]
+    back = marker_local_from_vertex(model, "M0", world, seg_transforms)
+    np.testing.assert_allclose(back, local, atol=1e-9)
+
+
+def test_reposition_marker_identity_returns_vertex():
+    model = _body_model([OsimMarker("M0", "B", [0.0, 0.0, 0.0])])  # world[B] = identity
+    verts = np.array([[0.1, 0.2, 0.3], [1.0, 2.0, 3.0]])
+    local = reposition_marker_to_vertex(
+        model, "M0", verts, 1, _identity_similarity(), seg_transforms=None
+    )
+    np.testing.assert_allclose(local, [1.0, 2.0, 3.0], atol=1e-9)
+
+
+def test_reposition_out_of_range_raises():
+    model = _body_model([OsimMarker("M0", "B", [0.0, 0.0, 0.0])])
+    verts = np.array([[0.0, 0.0, 0.0]])
+    with pytest.raises(ValueError, match="out of range"):
+        reposition_marker_to_vertex(model, "M0", verts, 5, _identity_similarity())
+
+
+def test_reposition_unknown_marker_raises():
+    model = _body_model([OsimMarker("M0", "B", [0.0, 0.0, 0.0])])
+    verts = np.array([[0.0, 0.0, 0.0]])
+    with pytest.raises(ValueError, match="unknown marker"):
+        reposition_marker_to_vertex(model, "NOPE", verts, 0, _identity_similarity())
 
 
 def test_validate_against_known_match_and_mismatch():

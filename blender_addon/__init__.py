@@ -255,6 +255,39 @@ def _update_show_linked_vertex(self, context):
     update_linked_vertex_indicator(context)
 
 
+def _compute_alignment(props):
+    """Load sample + model and compute global + per-segment transforms (all core)."""
+    npz_path = bpy.path.abspath(props.npz_path.strip()) if props.npz_path else ""
+    osim_path = bpy.path.abspath(props.osim_path.strip()) if props.osim_path else ""
+    if not npz_path or not osim_path:
+        raise ValueError("NPZ and OSIM paths must both be set")
+
+    from mesh2marker.alignment import align_mhr_to_opensim
+    from mesh2marker.mhr import load_mhr_npz
+    from mesh2marker.osim import parse_osim
+    from mesh2marker.segment_align import compute_segment_transforms
+
+    sample = load_mhr_npz(npz_path)
+    model = parse_osim(osim_path)
+    global_transform, _, _ = align_mhr_to_opensim(sample, model)
+    seg_transforms = compute_segment_transforms(sample, model, global_transform)
+    return sample, model, global_transform, seg_transforms
+
+
+def _vec_csv(vec) -> str:
+    return f"{float(vec[0])},{float(vec[1])},{float(vec[2])}"
+
+
+def _move_marker_sphere(marker_name: str, world_pos, conversion) -> None:
+    """Move a marker sphere to a world position (Z-up converted), if it exists."""
+    obj = bpy.data.objects.get(f"marker_{marker_name}")
+    if obj is None:
+        return
+    obj.matrix_world = conversion @ mathutils.Matrix.Translation(
+        (float(world_pos[0]), float(world_pos[1]), float(world_pos[2]))
+    )
+
+
 def _set_model_selectable(selectable: bool) -> None:
     """Toggle hide_select on the OpenSim model bones and marker spheres (not hidden)."""
     coll = bpy.data.collections.get(OPENSIM_COLLECTION_NAME)
@@ -277,10 +310,15 @@ class MarkerNameItem(PropertyGroup):
 
 
 class MarkerLinkItem(PropertyGroup):
-    """A marker -> MHR vertex-index link; indices stored as CSV (centroid first)."""
+    """A marker -> MHR vertex-index link; indices stored as CSV (centroid first).
+
+    ``local_offset`` is the repositioned segment-local marker position (CSV "x,y,z"),
+    empty until the marker is snapped to its linked vertex.
+    """
 
     marker_name: StringProperty(default="")
     vertex_indices: StringProperty(default="")
+    local_offset: StringProperty(default="")
 
 
 class Mesh2MarkerProperties(PropertyGroup):
@@ -728,6 +766,155 @@ class MESH2MARKER_OT_select_linked(Operator):
         return {"FINISHED"}
 
 
+class MESH2MARKER_OT_snap_marker(Operator):
+    """Reposition the active marker onto its linked MHR skin vertex."""
+
+    bl_idname = "mesh2marker.snap_marker"
+    bl_label = "Snap marker to linked vertex"
+    bl_description = "Reposition the active marker onto its linked vertex (skin)"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        props = context.scene.mesh2marker
+        name = _active_marker_name(props)
+        if not name:
+            self.report({"ERROR"}, "No active marker")
+            return {"CANCELLED"}
+        _, item = _find_link_item(props, name)
+        if item is None or not item.vertex_indices:
+            self.report({"WARNING"}, f"{name} is not linked")
+            return {"CANCELLED"}
+
+        _reload_core()
+        from mesh2marker.geometry import Y_UP_TO_Z_UP
+        from mesh2marker.linking import (
+            reposition_marker_to_vertex,
+            vertex_world_position,
+        )
+
+        try:
+            sample, model, gt, seg = _compute_alignment(props)
+            idx = int(item.vertex_indices.split(",")[0])
+            local = reposition_marker_to_vertex(model, name, sample.verts, idx, gt, seg)
+            world_pos = vertex_world_position(sample.verts, idx, gt)
+        except (OSError, ValueError) as exc:
+            self.report({"ERROR"}, f"Snap failed: {exc}")
+            return {"CANCELLED"}
+
+        item.local_offset = _vec_csv(local)
+        _move_marker_sphere(name, world_pos, mathutils.Matrix(Y_UP_TO_Z_UP.tolist()))
+        highlight_active_marker(context)
+        self.report({"INFO"}, f"Snapped {name} -> local ({item.local_offset})")
+        return {"FINISHED"}
+
+
+class MESH2MARKER_OT_set_marker_here(Operator):
+    """Link the selected MHR vertex to the active marker and snap it there."""
+
+    bl_idname = "mesh2marker.set_marker_here"
+    bl_label = "Set marker here from selected vertex"
+    bl_description = "Link the selected vertex (centroid) to the active marker and snap it"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        props = context.scene.mesh2marker
+        name = _active_marker_name(props)
+        if not name:
+            self.report({"ERROR"}, "No active marker")
+            return {"CANCELLED"}
+        obj = bpy.data.objects.get(MHR_OBJECT_NAME)
+        if obj is None or obj.type != "MESH":
+            self.report({"ERROR"}, f"{MHR_OBJECT_NAME!r} not found")
+            return {"CANCELLED"}
+        if obj.mode != "EDIT":
+            self.report({"ERROR"}, "Enter Edit Mode on MHR_body and select vertices")
+            return {"CANCELLED"}
+
+        bm = bmesh.from_edit_mesh(obj.data)
+        bm.verts.ensure_lookup_table()
+        selected = [v.index for v in bm.verts if v.select]
+        if not selected:
+            self.report({"ERROR"}, "No vertices selected")
+            return {"CANCELLED"}
+        coords = [None] * len(bm.verts)
+        for vert in bm.verts:
+            coords[vert.index] = (vert.co.x, vert.co.y, vert.co.z)
+
+        _reload_core()
+        from mesh2marker.geometry import Y_UP_TO_Z_UP
+        from mesh2marker.linking import (
+            ordered_indices,
+            reposition_marker_to_vertex,
+            vertex_world_position,
+        )
+
+        ordered = ordered_indices(coords, selected)
+        try:
+            sample, model, gt, seg = _compute_alignment(props)
+            idx = ordered[0]
+            local = reposition_marker_to_vertex(model, name, sample.verts, idx, gt, seg)
+            world_pos = vertex_world_position(sample.verts, idx, gt)
+        except (OSError, ValueError) as exc:
+            self.report({"ERROR"}, f"Set marker failed: {exc}")
+            return {"CANCELLED"}
+
+        _, item = _find_link_item(props, name)
+        if item is None:
+            item = props.links.add()
+            item.marker_name = name
+        item.vertex_indices = ",".join(str(i) for i in ordered)
+        item.local_offset = _vec_csv(local)
+        _move_marker_sphere(name, world_pos, mathutils.Matrix(Y_UP_TO_Z_UP.tolist()))
+        highlight_active_marker(context)
+        self.report({"INFO"}, f"Set {name} at vertex {idx}")
+        return {"FINISHED"}
+
+
+class MESH2MARKER_OT_snap_all_markers(Operator):
+    """Reposition every linked marker onto its skin vertex."""
+
+    bl_idname = "mesh2marker.snap_all_markers"
+    bl_label = "Snap ALL linked markers to skin"
+    bl_description = "Reposition every linked marker onto its linked vertex"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        props = context.scene.mesh2marker
+        _reload_core()
+        from mesh2marker.geometry import Y_UP_TO_Z_UP
+        from mesh2marker.linking import (
+            reposition_marker_to_vertex,
+            vertex_world_position,
+        )
+
+        try:
+            sample, model, gt, seg = _compute_alignment(props)
+        except (OSError, ValueError) as exc:
+            self.report({"ERROR"}, f"Snap-all failed: {exc}")
+            return {"CANCELLED"}
+
+        conversion = mathutils.Matrix(Y_UP_TO_Z_UP.tolist())
+        n = 0
+        for item in props.links:
+            if not item.vertex_indices:
+                continue
+            idx = int(item.vertex_indices.split(",")[0])
+            try:
+                local = reposition_marker_to_vertex(
+                    model, item.marker_name, sample.verts, idx, gt, seg
+                )
+                world_pos = vertex_world_position(sample.verts, idx, gt)
+            except ValueError:
+                continue  # unknown marker / out-of-range index
+            item.local_offset = _vec_csv(local)
+            _move_marker_sphere(item.marker_name, world_pos, conversion)
+            n += 1
+
+        highlight_active_marker(context)
+        self.report({"INFO"}, f"Snapped {n} markers to skin")
+        return {"FINISHED"}
+
+
 class MESH2MARKER_OT_auto_link(Operator):
     """Auto-link every still-unlinked marker to its nearest MHR skin vertex."""
 
@@ -905,6 +1092,9 @@ class MESH2MARKER_PT_panel(Panel):
         col.operator(
             MESH2MARKER_OT_select_linked.bl_idname, icon="RESTRICT_SELECT_OFF"
         )
+        col.operator(MESH2MARKER_OT_snap_marker.bl_idname, icon="SNAP_ON")
+        col.operator(MESH2MARKER_OT_set_marker_here.bl_idname, icon="VERTEXSEL")
+        col.operator(MESH2MARKER_OT_snap_all_markers.bl_idname, icon="SNAP_VERTEX")
         col.prop(props, "show_linked_vertex")
 
         col.separator()
@@ -927,6 +1117,9 @@ _CLASSES = (
     MESH2MARKER_OT_link_vertices,
     MESH2MARKER_OT_unlink_marker,
     MESH2MARKER_OT_select_linked,
+    MESH2MARKER_OT_snap_marker,
+    MESH2MARKER_OT_set_marker_here,
+    MESH2MARKER_OT_snap_all_markers,
     MESH2MARKER_PT_panel,
 )
 
