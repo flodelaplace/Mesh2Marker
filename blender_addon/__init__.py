@@ -51,7 +51,7 @@ _ensure_core_on_path()
 
 import bpy  # noqa: E402 (must follow the sys.path shim above)
 import mathutils  # noqa: E402
-from bpy.props import PointerProperty, StringProperty  # noqa: E402
+from bpy.props import BoolProperty, PointerProperty, StringProperty  # noqa: E402
 from bpy.types import Operator, Panel, PropertyGroup  # noqa: E402
 
 MHR_OBJECT_NAME = "MHR_body"
@@ -76,6 +76,14 @@ class Mesh2MarkerProperties(PropertyGroup):
         description="Directory holding the segment geometry files (.stl)",
         subtype="DIR_PATH",
         default="",
+    )
+    align_skeleton: BoolProperty(
+        name="Align skeleton to MHR mesh (per-segment)",
+        description=(
+            "Fit each long bone between its two joint centres onto the MHR mesh "
+            "(needs the NPZ path). When off, segments are placed in the neutral pose"
+        ),
+        default=True,
     )
 
 
@@ -170,6 +178,25 @@ class MESH2MARKER_OT_load_opensim(Operator):
             self.report({"ERROR"}, f"Failed to load OpenSim model: {exc}")
             return {"CANCELLED"}
 
+        # Optional per-segment correction: fit each long bone onto the MHR mesh.
+        # All matrices come from the core; the bpy layer only multiplies them.
+        seg_transforms = None
+        npz_path = bpy.path.abspath(props.npz_path.strip()) if props.npz_path else ""
+        if props.align_skeleton and npz_path:
+            from mesh2marker.alignment import align_mhr_to_opensim
+            from mesh2marker.mhr import load_mhr_npz
+            from mesh2marker.segment_align import compute_segment_transforms
+
+            try:
+                sample = load_mhr_npz(npz_path)
+                global_transform, _, _ = align_mhr_to_opensim(sample, model)
+                seg_transforms = compute_segment_transforms(
+                    sample, model, global_transform
+                )
+            except (OSError, ValueError) as exc:
+                self.report({"WARNING"}, f"Per-segment align skipped: {exc}")
+                seg_transforms = None
+
         # Replace any previous import so reloads do not pile up duplicates.
         old = bpy.data.collections.get(OPENSIM_COLLECTION_NAME)
         if old is not None:
@@ -191,8 +218,11 @@ class MESH2MARKER_OT_load_opensim(Operator):
                 if resolved is None:
                     continue  # body/geometry with no available file: skip silently
 
-                local_matrix = geometry_world_matrix(body_world, geom)
-                final = conversion @ mathutils.Matrix(local_matrix.tolist())
+                placed = geometry_world_matrix(body_world, geom)
+                if seg_transforms is not None:
+                    # Correction acts in the OpenSim world frame, before Z-up.
+                    placed = seg_transforms[body.name] @ placed
+                final = conversion @ mathutils.Matrix(placed.tolist())
 
                 bpy.ops.wm.stl_import(filepath=str(resolved))
                 for obj in context.selected_objects:
@@ -264,6 +294,51 @@ class MESH2MARKER_OT_align_mhr(Operator):
         return {"FINISHED"}
 
 
+class MESH2MARKER_OT_toggle_transparency(Operator):
+    """Toggle the MHR body between opaque and semi-transparent (see bones through skin)."""
+
+    bl_idname = "mesh2marker.toggle_transparency"
+    bl_label = "Toggle mesh transparency"
+    bl_description = (
+        "Make MHR_body semi-transparent so bones show through the skin "
+        "(visible in Material Preview / Rendered). Click again to restore opacity"
+    )
+    bl_options = {"REGISTER", "UNDO"}
+
+    _MATERIAL_NAME = "MHR_body_transparent"
+
+    def execute(self, context):
+        obj = bpy.data.objects.get(MHR_OBJECT_NAME)
+        if obj is None:
+            self.report(
+                {"ERROR"}, f"{MHR_OBJECT_NAME!r} not found; load the MHR mesh first"
+            )
+            return {"CANCELLED"}
+
+        active = obj.active_material
+        if active is not None and active.name == self._MATERIAL_NAME:
+            obj.data.materials.clear()
+            self.report({"INFO"}, "MHR mesh opaque")
+            return {"FINISHED"}
+
+        mat = bpy.data.materials.get(self._MATERIAL_NAME) or bpy.data.materials.new(
+            self._MATERIAL_NAME
+        )
+        mat.use_nodes = True
+        bsdf = mat.node_tree.nodes.get("Principled BSDF")
+        if bsdf is not None:
+            bsdf.inputs["Alpha"].default_value = 0.4
+        if hasattr(mat, "blend_method"):
+            mat.blend_method = "BLEND"
+        if hasattr(mat, "show_transparent_back"):
+            mat.show_transparent_back = False
+
+        obj.data.materials.clear()
+        obj.data.materials.append(mat)
+        self.report({"INFO"}, "MHR mesh semi-transparent (see it in Material Preview)")
+        return {"FINISHED"}
+
+
 class MESH2MARKER_PT_panel(Panel):
     bl_label = "Mesh2Marker"
     bl_idname = "MESH2MARKER_PT_panel"
@@ -286,6 +361,7 @@ class MESH2MARKER_PT_panel(Panel):
         col.label(text="OpenSim model")
         col.prop(props, "osim_path")
         col.prop(props, "geometry_dir")
+        col.prop(props, "align_skeleton")
         col.operator(MESH2MARKER_OT_load_opensim.bl_idname, icon="ARMATURE_DATA")
 
         layout.separator()
@@ -294,12 +370,19 @@ class MESH2MARKER_PT_panel(Panel):
         col.label(text="Alignment")
         col.operator(MESH2MARKER_OT_align_mhr.bl_idname, icon="SNAP_ON")
 
+        layout.separator()
+
+        col = layout.column(align=True)
+        col.label(text="Display")
+        col.operator(MESH2MARKER_OT_toggle_transparency.bl_idname, icon="XRAY")
+
 
 _CLASSES = (
     Mesh2MarkerProperties,
     MESH2MARKER_OT_load_mhr,
     MESH2MARKER_OT_load_opensim,
     MESH2MARKER_OT_align_mhr,
+    MESH2MARKER_OT_toggle_transparency,
     MESH2MARKER_PT_panel,
 )
 
