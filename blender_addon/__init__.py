@@ -295,6 +295,7 @@ def _links_from_props(props, name_to_body) -> list[dict]:
                 "vertex_indices": indices,
                 "opensim_body": name_to_body.get(item.marker_name, ""),
                 "local_offset": offset,
+                "fixed": item.fixed,
             }
         )
     return links
@@ -370,6 +371,11 @@ class MarkerLinkItem(PropertyGroup):
     marker_name: StringProperty(default="")
     vertex_indices: StringProperty(default="")
     local_offset: StringProperty(default="")
+    fixed: BoolProperty(
+        name="Bony",
+        description="True = bony landmark (rigid), False = soft tissue",
+        default=False,
+    )
 
 
 class Mesh2MarkerProperties(PropertyGroup):
@@ -712,6 +718,7 @@ class MESH2MARKER_UL_markers(UIList):
         row = layout.row(align=True)
         if link is not None and link.vertex_indices:
             row.label(text=item.name, icon="CHECKMARK")
+            row.label(text="B" if link.fixed else "S")
             row.label(text=link.vertex_indices)
         else:
             row.label(text=item.name, icon="DOT")
@@ -1042,6 +1049,39 @@ class MESH2MARKER_OT_auto_link(Operator):
         highlight_active_marker(context)
         self.report(
             {"INFO"}, f"Auto-linked {new_count} markers, kept {kept} existing"
+        )
+        return {"FINISHED"}
+
+
+class MESH2MARKER_OT_suggest_fixed(Operator):
+    """Heuristically suggest bony/soft for all linked markers (review afterwards)."""
+
+    bl_idname = "mesh2marker.suggest_fixed"
+    bl_label = "Suggest bony/soft (review)"
+    bl_description = (
+        "Name-based heuristic guess of bony (vs soft) per linked marker. A starting "
+        "point to review, not ground truth"
+    )
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        props = context.scene.mesh2marker
+        linked = [item for item in props.links if item.vertex_indices]
+        if not linked:
+            self.report({"WARNING"}, "No linked markers")
+            return {"CANCELLED"}
+
+        _reload_core()
+        from mesh2marker.linking import suggest_fixed_map
+
+        mapping = suggest_fixed_map([item.marker_name for item in linked])
+        bony = 0
+        for item in linked:
+            item.fixed = mapping.get(item.marker_name, False)
+            bony += int(item.fixed)
+        self.report(
+            {"INFO"},
+            f"Suggested {bony} bony / {len(linked) - bony} soft (review)",
         )
         return {"FINISHED"}
 
@@ -1439,6 +1479,16 @@ class MESH2MARKER_PT_panel(Panel):
         col.operator(MESH2MARKER_OT_snap_all_markers.bl_idname, icon="SNAP_VERTEX")
         col.prop(props, "show_linked_vertex")
 
+        # Bony/soft of the active marker (edits its link; requires one).
+        _, active_link = _find_link_item(props, _active_marker_name(props))
+        if active_link is not None:
+            col.prop(active_link, "fixed", text="Bony (vs soft)")
+        else:
+            sub = col.row()
+            sub.enabled = False
+            sub.label(text="Link the marker first to set bony/soft")
+        col.operator(MESH2MARKER_OT_suggest_fixed.bl_idname, icon="QUESTION")
+
         col.separator()
         col.prop(props, "mesh_alpha", slider=True)
         col.operator(MESH2MARKER_OT_toggle_transparency.bl_idname, icon="XRAY")
@@ -1464,6 +1514,7 @@ _CLASSES = (
     MESH2MARKER_OT_toggle_transparency,
     MESH2MARKER_UL_markers,
     MESH2MARKER_OT_auto_link,
+    MESH2MARKER_OT_suggest_fixed,
     MESH2MARKER_OT_enter_picking,
     MESH2MARKER_OT_exit_picking,
     MESH2MARKER_OT_link_vertices,

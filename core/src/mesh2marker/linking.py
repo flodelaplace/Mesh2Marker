@@ -236,3 +236,28 @@ def validate_against_known(
             continue
         result[marker_name] = link.chosen_index == int(expected)
     return result
+
+
+# Substrings (case-insensitive) that suggest a BONY prominence in the real
+# vocabulary. Soft-tissue clusters (FLT/FLB/SHN/TIB) and ambiguous names
+# (RFAradius/RFAulna, RH**, FRM, c_spine*) deliberately match none of these.
+_BONY_PATTERNS = (
+    "asi", "psi", "mal", "lfc", "mfc", "lel", "mel", "cal", "toe", "mt5",
+    "acr", "c7", "htop", "nose", "eye", "ear", "clav", "thumb", "index",
+    "pinky", "wrist",
+)
+
+
+def suggest_fixed(marker_name: str) -> bool:
+    """Heuristic SUGGESTION: True (bony) if the name looks like a bony prominence.
+
+    Pattern-based and conservative (default soft = False). This is a starting point
+    to review, NOT ground truth: the user revises each marker.
+    """
+    name = marker_name.lower()
+    return any(pattern in name for pattern in _BONY_PATTERNS)
+
+
+def suggest_fixed_map(marker_names: list[str]) -> dict[str, bool]:
+    """Apply :func:`suggest_fixed` to a list of marker names."""
+    return {name: suggest_fixed(name) for name in marker_names}

@@ -13,6 +13,8 @@ from mesh2marker.linking import (
     nearest_vertex,
     ordered_indices,
     reposition_marker_to_vertex,
+    suggest_fixed,
+    suggest_fixed_map,
     validate_against_known,
 )
 from mesh2marker.markers import marker_world_positions
@@ -242,3 +244,25 @@ def test_validate_against_known_match_and_mismatch():
 
     assert result == {"RASI": True, "RKNE": False, "LASI": True}
     assert "MISSING" not in result  # not in linkset
+
+
+def test_suggest_fixed_bony_cases():
+    for name in ("RASI", "RLMAL", "RMFC", "RACR", "C7", "HTOP", "Nose", "RWrist_hand"):
+        assert suggest_fixed(name) is True, name
+
+
+def test_suggest_fixed_soft_and_ambiguous_cases():
+    soft = ("RFLT", "RFLB", "RSHN", "RTIB", "RFAradius", "RHTO", "RFRM", "c_spine0")
+    for name in soft:
+        assert suggest_fixed(name) is False, name
+
+
+def test_suggest_fixed_case_insensitive():
+    assert suggest_fixed("rasi") is True
+    assert suggest_fixed("c7") is True
+    assert suggest_fixed("rtib") is False
+
+
+def test_suggest_fixed_map():
+    result = suggest_fixed_map(["RASI", "RTIB", "C7"])
+    assert result == {"RASI": True, "RTIB": False, "C7": True}
