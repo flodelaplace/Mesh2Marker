@@ -1,7 +1,5 @@
 """Session-links <-> correspondence-file bridge, reload, and export validation."""
 
-import importlib.util
-
 import pytest
 
 from mesh2marker.correspondence import (
@@ -13,7 +11,16 @@ from mesh2marker.correspondence import (
     write_correspondence,
 )
 
-_HAS_CONTRACTS = importlib.util.find_spec("mesh2sim.contracts") is not None
+
+def _has_contracts() -> bool:
+    # find_spec("mesh2sim.contracts") raises when the parent package is absent, so
+    # probe by import instead and never let it break collection.
+    try:
+        import mesh2sim.contracts  # noqa: F401
+
+        return True
+    except Exception:
+        return False
 
 META = {
     "mhr_topology_id": "mhr-template-v1",
@@ -134,7 +141,7 @@ def test_valid_export_passes_validation(tmp_path):
     validate_for_export(corr)  # no raise
 
 
-@pytest.mark.skipif(not _HAS_CONTRACTS, reason="mesh2sim.contracts not installed")
+@pytest.mark.skipif(not _has_contracts(), reason="mesh2sim.contracts absent")
 def test_builds_a_valid_contract_map():
     corr = links_to_correspondence(_links())
     contract_map = _to_contract_map(corr)

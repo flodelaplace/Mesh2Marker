@@ -1,9 +1,16 @@
-"""Strong pydantic validation: valid passes, invalid raises."""
+"""Strong pydantic validation: valid passes, invalid raises.
+
+pydantic lives only in the optional [validation] extra, so skip the whole module
+(never error) when it is absent.
+"""
 
 import pytest
-from pydantic import ValidationError
 
-from mesh2marker import validation
+pytest.importorskip("pydantic")
+
+from pydantic import ValidationError  # noqa: E402
+
+from mesh2marker import validation  # noqa: E402
 
 
 def test_valid_passes(valid_data):
