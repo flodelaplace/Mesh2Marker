@@ -7,8 +7,9 @@ import numpy as np
 
 from mesh2marker import cli
 from mesh2marker.alignment import align_mhr_to_opensim
-from mesh2marker.correspondence import write_correspondence
+from mesh2marker.correspondence import links_to_correspondence
 from mesh2marker.generate import generate_subject_osim, sample_from_betas
+from mesh2marker.io import write as write_correspondence_file
 from mesh2marker.linking import centroid_vertex, reposition_marker_to_vertex
 from mesh2marker.mhr import MhrSample
 from mesh2marker.osim import parse_osim
@@ -148,13 +149,12 @@ def _write_corr(tmp_path) -> str:
         {"marker": "MK1", "vertex_indices": [3], "opensim_body": "femur_r"},
         {"marker": "MK2", "vertex_indices": [7, 8], "opensim_body": "humerus_r"},
     ]
-    write_correspondence(
-        links,
-        path,
-        mhr_topology_id="mhr-50",
-        opensim_model="synthetic",
-        marker_set="test",
+    # Synthetic (non-vocabulary) input map for the plumbing test: build the schema
+    # object and write it with the low-level writer, bypassing export validation.
+    corr = links_to_correspondence(
+        links, mhr_topology_id="mhr-50", opensim_model="synthetic", marker_set="test"
     )
+    write_correspondence_file(corr, path)
     return str(path)
 
 

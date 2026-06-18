@@ -12,8 +12,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-# Schema version always written into the correspondence file.
-SCHEMA_VERSION = "1.0"
+# Schema version always written into the correspondence file. This is the shared
+# Mesh2Sim contract wire version (mesh2sim.contracts.SCHEMA_VERSION), so exports load
+# in the pipeline; bump together with the contract.
+SCHEMA_VERSION = "0.1.0"
 
 
 @dataclass

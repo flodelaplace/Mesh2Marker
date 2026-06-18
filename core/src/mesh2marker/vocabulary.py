@@ -15,6 +15,13 @@ underscore; ``"RFAradius"`` / ``"RFAulna"`` both sit on body ``radius_r`` (mirro
 
 from __future__ import annotations
 
+# Canonical identity values written into the correspondence file, aligned with the
+# Mesh2Sim shared contract: MODEL_SLUG is the key of SEGMENTS_BY_MODEL (and the
+# pipeline's DEFAULT_MODEL_ID); MHR_TOPOLOGY_ID is the value the pipeline frontend
+# uses to bind a map to the MHR mesh topology.
+MODEL_SLUG = "Pose2Sim_Wholebody"
+MHR_TOPOLOGY_ID = "mhr_v1"
+
 # The 73 marker names of Pose2Sim_Wholebody — the shared landmark vocabulary.
 LANDMARK_NAMES: frozenset[str] = frozenset(
     {

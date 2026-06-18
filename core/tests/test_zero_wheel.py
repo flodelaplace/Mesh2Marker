@@ -15,6 +15,9 @@ def test_core_import_path_has_no_pydantic():
         "import mesh2marker.models\n"
         "import mesh2marker.io\n"
         "import mesh2marker.checks\n"
+        # correspondence's contract validation is a lazy import: importing the module
+        # (and even building the schema) must not pull pydantic / mesh2sim.contracts.
+        "import mesh2marker.correspondence\n"
         "leaked = sorted(m for m in sys.modules if 'pydantic' in m)\n"
         "assert not leaked, leaked\n"
     )

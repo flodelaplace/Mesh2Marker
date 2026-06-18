@@ -1198,7 +1198,7 @@ class MESH2MARKER_OT_export_correspondence(Operator):
         from mesh2marker.procrustes import to_frame_alignment
 
         try:
-            sample, model, global_transform, _ = _compute_alignment(props)
+            _sample, model, global_transform, _ = _compute_alignment(props)
         except (OSError, ValueError) as exc:
             self.report({"ERROR"}, f"Export failed: {exc}")
             return {"CANCELLED"}
@@ -1209,17 +1209,20 @@ class MESH2MARKER_OT_export_correspondence(Operator):
             self.report({"WARNING"}, "No links to export")
             return {"CANCELLED"}
 
-        write_correspondence(
-            links,
-            self.filepath,
-            mhr_topology_id=f"mhr-{len(sample.verts)}",
-            opensim_model=model.name,
-            marker_set="mesh2marker",
-            frame_alignment=to_frame_alignment(global_transform),
-        )
-        self.report(
-            {"INFO"}, f"Exported {len(links)} markers -> {self.filepath}"
-        )
+        # Identity fields default to the canonical contract values (slug + mhr_v1).
+        # write_correspondence validates (vocabulary + CorrespondenceMap when
+        # mesh2sim.contracts is installed) and raises ValueError on any problem.
+        try:
+            write_correspondence(
+                links,
+                self.filepath,
+                frame_alignment=to_frame_alignment(global_transform),
+            )
+        except (OSError, ValueError) as exc:
+            self.report({"ERROR"}, f"Export rejected by validation: {exc}")
+            return {"CANCELLED"}
+
+        self.report({"INFO"}, f"Exported {len(links)} markers -> {self.filepath}")
         return {"FINISHED"}
 
 
