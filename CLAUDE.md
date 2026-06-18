@@ -12,6 +12,35 @@ regardless of morphology. The mapping is defined ONCE on a template mesh and reu
 subject. This tool produces a reusable, shareable asset (the equivalent of a standard marker
 set in optical mocap), not a per-subject output.
 
+## Role of Mesh2Marker and bridge stage order
+Durable reference (we clarified this; do not lose it). Mesh2Marker is a pip-installable
+CONFIGURATION tool, NOT a processing engine. It never touches video and never runs
+frame-by-frame. It acts at two moments, both OUTSIDE the processing loop:
+
+1. Global configuration, once per model: manual placement of markers on the MHR mesh,
+   producing the CorrespondenceMap (markers -> invariant mhr_vertices). A default model and its
+   map will ship in the Mesh2Marker repo so this step need not be redone.
+2. Per-subject personalization, once per participant, AFTER inference: from the subject mesh's
+   morphology parameters (produced by inference) and the CorrespondenceMap, Mesh2Marker
+   generates a personalized .osim with the reference markers placed on the subject's skin. This
+   step CANNOT precede inference, since it consumes the shape parameters inference produces.
+   Novel contribution: a reference marker set adapted to individual morphology, not to an
+   average subject.
+
+Frame-by-frame processing (extracting the observed marker positions on the subject's meshes via
+the mhr_vertices, centroid if several) is done by the PIPELINE, not by Mesh2Marker. It is a
+simple computation (read vertices, average) that belongs to the BodyEstimate ->
+AnatomicalObservation adapter.
+
+Consistency via shape-lock: the subject's shape is locked for the trial, so the personalized
+.osim (step 2) and the frame-by-frame processed meshes start from the same morphology, which
+aligns the reference model with the observations.
+
+Bridge stage order: frontend (inference, per-frame BodyEstimate) -> shape-lock -> per-subject
+personalized .osim generation via Mesh2Marker (step 2) -> frame-by-frame adapter (observed
+positions -> AnatomicalObservation) -> fusion/assembly and frame transform -> OpenSim Scale + IK
+on the personalized .osim.
+
 ## Architecture: strict two-layer split
 - `core/` : pure Python, NO bpy. Business logic, fully testable with plain pytest.
   Parsing of .osim, Procrustes alignment, local offset computation, correspondence-file
