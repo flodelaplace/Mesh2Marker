@@ -15,6 +15,9 @@ dependencies = [
     "numpy",
 ]
 
+[project.scripts]
+mesh2marker = "mesh2marker.cli:main"
+
 [project.optional-dependencies]
 validation = [
     "pydantic>=2",
