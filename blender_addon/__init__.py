@@ -271,7 +271,7 @@ def _current_sample(props):
     if _SHAPE_BASIS is not None:
         from mesh2marker.morph import morph
 
-        return morph(_SHAPE_BASIS, list(props.betas))
+        return morph(_SHAPE_BASIS, _full_betas(props))
     npz_path = bpy.path.abspath(props.npz_path.strip()) if props.npz_path else ""
     if not npz_path:
         raise ValueError("Load an MHR mesh (.npz) or a shape basis first")
@@ -353,13 +353,35 @@ def _set_model_selectable(selectable: bool) -> None:
 
 # Shape morph: the basis holds numpy arrays (too big / not serializable as a
 # Property), so it is cached module-globally. Blender caps a FloatVectorProperty at
-# 32 elements; betas are stored as 32 and only 12 are exposed as sliders (the rest
-# stay 0). The core morph zero-pads to the loaded basis size (45 identity, or 73 for
-# the extended identity+scale basis). The interactive sliders drive the identity
-# block; the full 73-vector (with scale_params) is used via the headless C2 CLI.
+# 32 elements, so the 73-vector is split across two props: `betas` (identity) and
+# `scale_betas` (the 28 scale directions). Only a subset of each is exposed as
+# sliders (the rest stay 0). `_full_betas` reassembles them into the concatenated
+# [identity(45), scale(28)] vector, capped to the loaded basis size so the legacy
+# 45-basis (identity only) still works. The core morph zero-pads any shorter vector.
 _SHAPE_BASIS = None
-N_BETAS = 32
+N_BETAS = 32  # identity slots stored (basis identity block is 45; [32:45] stay 0)
 N_BETAS_SHOWN = 12
+N_IDENTITY = 45  # identity block length of the extended basis
+N_SCALE = 28  # scale block length ([45:73] of the concatenated vector)
+# Scale PCA rows 45,46,47,61 are dead (zero) -> local scale indices 0,1,2,16.
+# Expose only live directions as sliders so every slider actually moves the skeleton.
+_LIVE_SCALE = [k for k in range(N_SCALE) if (N_IDENTITY + k) not in (45, 46, 47, 61)]
+N_SCALE_SHOWN = 12  # first N live scale directions shown as bone-length sliders
+
+
+def _full_betas(props) -> list:
+    """Concatenate the identity and scale slider blocks into one shape vector.
+
+    Layout [identity(45), scale(28)] = 73, capped to the loaded basis size: the
+    extended basis keeps all 73; the legacy 45-basis keeps identity only (its morph
+    has no scale block). The core morph zero-pads anything shorter.
+    """
+    identity = list(props.betas)
+    identity += [0.0] * (N_IDENTITY - len(identity))  # pad 32 -> 45
+    full = identity + list(props.scale_betas)  # 45 + 28 = 73
+    if _SHAPE_BASIS is not None:
+        full = full[: _SHAPE_BASIS.n_shape]
+    return full
 
 
 def _morph_to_mhr_body(context) -> None:
@@ -371,7 +393,7 @@ def _morph_to_mhr_body(context) -> None:
         return
     from mesh2marker.morph import morph
 
-    sample = morph(_SHAPE_BASIS, list(context.scene.mesh2marker.betas))
+    sample = morph(_SHAPE_BASIS, _full_betas(context.scene.mesh2marker))
     if len(obj.data.vertices) != sample.verts.shape[0]:
         return  # topology mismatch: do not touch
     obj.data.vertices.foreach_set("co", sample.verts.ravel())
@@ -448,9 +470,20 @@ class Mesh2MarkerProperties(PropertyGroup):
     )
     betas: FloatVectorProperty(
         name="Shape betas",
-        description="MHR shape coefficients (rest-pose morph)",
+        description="MHR identity coefficients (rest-pose morph)",
         size=N_BETAS,
         default=[0.0] * N_BETAS,
+        soft_min=-3.0,
+        soft_max=3.0,
+        min=-5.0,
+        max=5.0,
+        update=_update_betas,
+    )
+    scale_betas: FloatVectorProperty(
+        name="Bone-scale betas",
+        description="MHR scale coefficients (bone lengths; extended basis only)",
+        size=N_SCALE,
+        default=[0.0] * N_SCALE,
         soft_min=-3.0,
         soft_max=3.0,
         min=-5.0,
@@ -1202,6 +1235,7 @@ class MESH2MARKER_OT_load_shape_basis(Operator):
 
         _SHAPE_BASIS = basis
         props.betas = [0.0] * N_BETAS  # mean shape (update is a no-op until built)
+        props.scale_betas = [0.0] * N_SCALE
         sample = morph(basis, [0.0] * basis.n_shape)
 
         existing = bpy.data.objects.get(MHR_OBJECT_NAME)
@@ -1235,6 +1269,7 @@ class MESH2MARKER_OT_reset_shape(Operator):
 
     def execute(self, context):
         context.scene.mesh2marker.betas = [0.0] * N_BETAS
+        context.scene.mesh2marker.scale_betas = [0.0] * N_SCALE
         self.report({"INFO"}, "Shape reset to mean")
         return {"FINISHED"}
 
@@ -1457,11 +1492,23 @@ class MESH2MARKER_PT_panel(Panel):
         col.prop(props, "shape_basis_path")
         col.operator(MESH2MARKER_OT_load_shape_basis.bl_idname, icon="MOD_SMOOTH")
         col.label(text="0 = mean shape; drag to 2-3 for a strong morph")
+        col.label(text="Identity", icon="OUTLINER_OB_ARMATURE")
         for i in range(N_BETAS_SHOWN):
             col.prop(props, "betas", index=i, slider=True, text=f"Shape {i}")
+
+        has_scale = _SHAPE_BASIS is not None and _SHAPE_BASIS.n_shape > N_IDENTITY
+        if has_scale:
+            col.separator()
+            col.label(text="Bone length (scale)", icon="MOD_LENGTH")
+            for n, k in enumerate(_LIVE_SCALE[:N_SCALE_SHOWN]):
+                col.prop(props, "scale_betas", index=k, slider=True, text=f"Bone {n}")
+        elif _SHAPE_BASIS is not None:
+            col.separator()
+            col.label(text="(load the extended basis for bone-length sliders)")
+
         col.operator(MESH2MARKER_OT_reset_shape.bl_idname, icon="LOOP_BACK")
         basis_n = _SHAPE_BASIS.n_shape if _SHAPE_BASIS is not None else "—"
-        col.label(text=f"{N_BETAS_SHOWN} sliders shown (basis: {basis_n} components)")
+        col.label(text=f"basis: {basis_n} components")
 
         layout.separator()
 
