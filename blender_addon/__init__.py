@@ -1380,6 +1380,7 @@ class MESH2MARKER_OT_import_correspondence(Operator):
             item = props.links.add()
             item.marker_name = link["marker"]
             item.vertex_indices = ",".join(str(i) for i in link["vertex_indices"])
+            item.fixed = bool(link.get("fixed", False))
             offset = link.get("local_offset")
             if offset:
                 item.local_offset = ",".join(str(float(x)) for x in offset)
