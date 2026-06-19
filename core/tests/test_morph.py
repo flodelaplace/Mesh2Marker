@@ -1,6 +1,7 @@
 """Linear shape morph: load/validate the basis, exactness and linearity."""
 
 import json
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -13,6 +14,12 @@ from mesh2marker.morph import (
 
 N, J, K, S = 6, 4, 5, 3
 DELTA = 0.1
+
+# Real bases live in the gitignored local_models/ (not in the repo). The extended
+# basis is the identity(45)+scale(28) = 73 concatenated layout consumed by C2.
+_LOCAL = Path(__file__).resolve().parents[2] / "local_models"
+_BASIS_45 = _LOCAL / "mhr_shape_basis.npz"
+_BASIS_73 = _LOCAL / "mhr_shape_basis_extended.npz"
 
 
 def _arrays(seed=0):
@@ -119,3 +126,45 @@ def test_component_displacements_length(tmp_path):
     disp = component_displacements(basis)
     assert disp.shape == (S,)
     assert np.all(disp >= 0)
+
+
+@pytest.mark.skipif(not _BASIS_73.exists(), reason="extended basis absent")
+def test_extended_basis_is_73_and_morph_consumes_concatenated_vector():
+    # The extended basis exposes n_shape == 73 (45 identity + 28 scale). morph stays
+    # component-agnostic: it accepts the full concatenated vector, zero-pads shorter
+    # ones (identity-only), and rejects anything longer.
+    basis = load_shape_basis(_BASIS_73)
+    assert basis.n_shape == 73
+    assert basis.dv.shape == (73, basis.v0.shape[0], 3)
+    morph(basis, np.zeros(73))  # full vector: no raise
+    morph(basis, np.zeros(45))  # identity-only, scales zero-padded: no raise
+    with pytest.raises(ValueError, match="exceeds n_shape"):
+        morph(basis, np.zeros(74))
+
+
+@pytest.mark.skipif(not _BASIS_73.exists(), reason="extended basis absent")
+def test_extended_basis_scale_block_moves_surface():
+    # A scale direction (index 48, a live one) must deform the skin, otherwise the
+    # 28 scale params would be inert for marker placement.
+    basis = load_shape_basis(_BASIS_73)
+    betas = np.zeros(73)
+    betas[48] = 1.0
+    moved = morph(basis, betas).verts
+    assert np.linalg.norm(moved - basis.v0, axis=1).max() > 1e-3
+
+
+@pytest.mark.skipif(
+    not (_BASIS_73.exists() and _BASIS_45.exists()),
+    reason="both bases needed in local_models/",
+)
+def test_extended_basis_identity_block_matches_45_basis_bit_for_bit():
+    # The first 45 directions and the rest pose are inherited verbatim, so markers
+    # already picked on V0 stay semantically aligned across the two bases.
+    ext = load_shape_basis(_BASIS_73)
+    old = load_shape_basis(_BASIS_45)
+    np.testing.assert_array_equal(ext.v0, old.v0)
+    np.testing.assert_array_equal(ext.j0, old.j0)
+    np.testing.assert_array_equal(ext.kp0, old.kp0)
+    np.testing.assert_array_equal(ext.dv[:45], old.dv)
+    np.testing.assert_array_equal(ext.dj[:45], old.dj)
+    np.testing.assert_array_equal(ext.dkp[:45], old.dkp)

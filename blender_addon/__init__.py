@@ -353,8 +353,10 @@ def _set_model_selectable(selectable: bool) -> None:
 
 # Shape morph: the basis holds numpy arrays (too big / not serializable as a
 # Property), so it is cached module-globally. Blender caps a FloatVectorProperty at
-# 32 elements, so betas are stored as 32 (the real basis has 45; only 12 are exposed
-# and the rest stay 0, which the core morph zero-pads back to 45).
+# 32 elements; betas are stored as 32 and only 12 are exposed as sliders (the rest
+# stay 0). The core morph zero-pads to the loaded basis size (45 identity, or 73 for
+# the extended identity+scale basis). The interactive sliders drive the identity
+# block; the full 73-vector (with scale_params) is used via the headless C2 CLI.
 _SHAPE_BASIS = None
 N_BETAS = 32
 N_BETAS_SHOWN = 12
@@ -1458,7 +1460,8 @@ class MESH2MARKER_PT_panel(Panel):
         for i in range(N_BETAS_SHOWN):
             col.prop(props, "betas", index=i, slider=True, text=f"Shape {i}")
         col.operator(MESH2MARKER_OT_reset_shape.bl_idname, icon="LOOP_BACK")
-        col.label(text=f"Basis has 45 components; {N_BETAS_SHOWN} shown")
+        basis_n = _SHAPE_BASIS.n_shape if _SHAPE_BASIS is not None else "—"
+        col.label(text=f"{N_BETAS_SHOWN} sliders shown (basis: {basis_n} components)")
 
         layout.separator()
 

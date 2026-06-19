@@ -153,3 +153,24 @@ mesh), so moving the model's markers onto the skin makes the marker set consiste
   (template + sum(beta_i * direction_i)). The shape basis (template + 45 identity directions +
   shape->joints regression) will be exported ONCE from the upstream pipeline (which has MHR) to a
   simple .npz that Mesh2Marker consumes. To confirm: linearity of MHR shape at rest.
+
+### Shape basis: 45-identity and the extended 73 (identity + scale) — DELIVERED
+The upstream pipeline now exports an EXTENDED shape basis and Mesh2Marker consumes it:
+`local_models/mhr_shape_basis_extended.npz` (gitignored). Layout of the concatenated shape
+vector, length **73 = 45 identity + 28 scale**:
+- indices `[0:45]`: the original identity directions, **bit-for-bit identical** to the legacy
+  `local_models/mhr_shape_basis.npz` (verified). `V0/J0/KP0/faces` are inherited verbatim, so
+  markers already picked on `V0` stay semantically aligned across both bases.
+- indices `[45:73]`: 28 scale directions from the MHR rig. The effective scale dimension is 24
+  (rows `[45,46,47,61]` are identically zero — dead PCA components, kept at 28 for contract
+  consistency). The scale block of `dKP` is zero-padded: this basis does NOT regenerate the 70
+  keypoints for scale-only changes — fine for marker placement (which reads vertices), but any
+  downstream stage needing scale-dependent keypoints must recompute them.
+
+C2 (per-subject .osim generation) now consumes a single concatenated 73-vector
+`[shape_params(45), scale_params(28)]`, passed to `morph(basis, betas)` / the headless
+`mesh2marker generate --basis … --betas …` CLI. `morph` is component-agnostic: it reads
+`n_shape` from the basis (`dV.shape[0]`), accepts the full 73-vector, zero-pads shorter ones
+(identity-only), and rejects longer ones. The interactive Blender sliders still drive only the
+identity block (12 of 32 exposed); the full 73-vector is the headless C2 path. The legacy
+45-basis remains loadable for backward compatibility.
