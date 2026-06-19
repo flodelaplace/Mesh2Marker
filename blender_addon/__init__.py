@@ -256,19 +256,44 @@ def _update_show_linked_vertex(self, context):
     update_linked_vertex_indicator(context)
 
 
-def _compute_alignment(props):
-    """Load sample + model and compute global + per-segment transforms (all core)."""
+def _has_sample_source(props) -> bool:
+    """True if a sample is available: a loaded shape basis, or an NPZ path set."""
+    return _SHAPE_BASIS is not None or bool(props.npz_path and props.npz_path.strip())
+
+
+def _current_sample(props):
+    """The MHR sample currently displayed.
+
+    If a shape basis is loaded, return the morphed sample (basis + current betas) so
+    snap/align/export follow the sliders; otherwise load the NPZ on disk. Raises
+    ValueError if neither source is available.
+    """
+    if _SHAPE_BASIS is not None:
+        from mesh2marker.morph import morph
+
+        return morph(_SHAPE_BASIS, list(props.betas))
     npz_path = bpy.path.abspath(props.npz_path.strip()) if props.npz_path else ""
+    if not npz_path:
+        raise ValueError("Load an MHR mesh (.npz) or a shape basis first")
+    from mesh2marker.mhr import load_mhr_npz
+
+    return load_mhr_npz(npz_path)
+
+
+def _compute_alignment(props):
+    """Sample + model and global + per-segment transforms (all core).
+
+    The sample follows the current morph when a shape basis is loaded.
+    """
     osim_path = bpy.path.abspath(props.osim_path.strip()) if props.osim_path else ""
-    if not npz_path or not osim_path:
-        raise ValueError("NPZ and OSIM paths must both be set")
+    if not osim_path:
+        raise ValueError("OSIM path must be set")
 
     from mesh2marker.alignment import align_mhr_to_opensim
-    from mesh2marker.mhr import load_mhr_npz
     from mesh2marker.osim import parse_osim
     from mesh2marker.segment_align import compute_segment_transforms
 
-    sample = load_mhr_npz(npz_path)
+    sample = _current_sample(props)
     model = parse_osim(osim_path)
     global_transform, _, _ = align_mhr_to_opensim(sample, model)
     seg_transforms = compute_segment_transforms(sample, model, global_transform)
@@ -483,6 +508,10 @@ class MESH2MARKER_OT_load_mhr(Operator):
         obj = bpy.data.objects.new(MHR_OBJECT_NAME, mesh)
         context.scene.collection.objects.link(obj)
 
+        # Loading a raw npz mesh leaves shape-basis mode: snap/align use this npz.
+        global _SHAPE_BASIS
+        _SHAPE_BASIS = None
+
         self.report(
             {"INFO"},
             f"Loaded MHR mesh: {len(sample.verts)} verts, {len(sample.faces)} faces "
@@ -541,14 +570,12 @@ class MESH2MARKER_OT_load_opensim(Operator):
         # Optional per-segment correction: fit each long bone onto the MHR mesh.
         # All matrices come from the core; the bpy layer only multiplies them.
         seg_transforms = None
-        npz_path = bpy.path.abspath(props.npz_path.strip()) if props.npz_path else ""
-        if props.align_skeleton and npz_path:
+        if props.align_skeleton and _has_sample_source(props):
             from mesh2marker.alignment import align_mhr_to_opensim
-            from mesh2marker.mhr import load_mhr_npz
             from mesh2marker.segment_align import compute_segment_transforms
 
             try:
-                sample = load_mhr_npz(npz_path)
+                sample = _current_sample(props)  # follows the morph if a basis is loaded
                 global_transform, _, _ = align_mhr_to_opensim(sample, model)
                 seg_transforms = compute_segment_transforms(
                     sample, model, global_transform
@@ -638,10 +665,9 @@ class MESH2MARKER_OT_align_mhr(Operator):
 
     def execute(self, context):
         props = context.scene.mesh2marker
-        npz_path = bpy.path.abspath(props.npz_path.strip()) if props.npz_path else ""
         osim_path = bpy.path.abspath(props.osim_path.strip()) if props.osim_path else ""
-        if not npz_path:
-            self.report({"ERROR"}, "NPZ path is empty")
+        if not _has_sample_source(props):
+            self.report({"ERROR"}, "Load an MHR mesh (.npz) or a shape basis first")
             return {"CANCELLED"}
         if not osim_path:
             self.report({"ERROR"}, "OSIM path is empty")
@@ -658,11 +684,10 @@ class MESH2MARKER_OT_align_mhr(Operator):
         _reload_core()
         from mesh2marker.alignment import align_mhr_to_opensim, similarity_to_matrix
         from mesh2marker.geometry import Y_UP_TO_Z_UP
-        from mesh2marker.mhr import load_mhr_npz
         from mesh2marker.osim import parse_osim
 
         try:
-            sample = load_mhr_npz(npz_path)
+            sample = _current_sample(props)
             model = parse_osim(osim_path)
             transform, residual, pairs = align_mhr_to_opensim(sample, model)
         except (OSError, ValueError) as exc:
@@ -1003,10 +1028,9 @@ class MESH2MARKER_OT_auto_link(Operator):
 
     def execute(self, context):
         props = context.scene.mesh2marker
-        npz_path = bpy.path.abspath(props.npz_path.strip()) if props.npz_path else ""
         osim_path = bpy.path.abspath(props.osim_path.strip()) if props.osim_path else ""
-        if not npz_path:
-            self.report({"ERROR"}, "NPZ path is empty")
+        if not _has_sample_source(props):
+            self.report({"ERROR"}, "Load an MHR mesh (.npz) or a shape basis first")
             return {"CANCELLED"}
         if not osim_path:
             self.report({"ERROR"}, "OSIM path is empty")
@@ -1016,12 +1040,11 @@ class MESH2MARKER_OT_auto_link(Operator):
         _reload_core()
         from mesh2marker.alignment import align_mhr_to_opensim
         from mesh2marker.linking import auto_link_markers
-        from mesh2marker.mhr import load_mhr_npz
         from mesh2marker.osim import parse_osim
         from mesh2marker.segment_align import compute_segment_transforms
 
         try:
-            sample = load_mhr_npz(npz_path)
+            sample = _current_sample(props)
             model = parse_osim(osim_path)
             global_transform, _, _ = align_mhr_to_opensim(sample, model)
             seg_transforms = compute_segment_transforms(
