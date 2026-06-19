@@ -29,6 +29,11 @@ REAL_NPZ = Path(__file__).parents[2] / "local_models" / "markers_Squat_mesh.npz"
 REAL_OSIM = (
     Path(__file__).parents[2] / "local_models" / "Model_Flodelaplace_mocap.osim"
 )
+EXT_BASIS = (
+    Path(__file__).parents[2] / "local_models" / "mhr_shape_basis_extended.npz"
+)
+# Live scale directions of the extended basis ([45:73] minus the 4 dead PCA rows).
+_DEAD_SCALE = {45, 46, 47, 61}
 
 
 def _apply(matrix: np.ndarray, point) -> np.ndarray:
@@ -99,6 +104,22 @@ def _sample_with_kps(kps: dict) -> MhrSample:
     )
 
 
+def _sample_with_joints(joints: dict) -> MhrSample:
+    joint_coords = np.zeros((127, 3), dtype=np.float32)
+    for idx, value in joints.items():
+        joint_coords[idx] = value
+    return MhrSample(
+        verts=np.zeros((3, 3), dtype=np.float32),
+        faces=np.zeros((1, 3), dtype=np.int32),
+        joint_coords=joint_coords,
+        keypoints=np.zeros((70, 3), dtype=np.float32),
+        frame_index=0,
+        coordinate_frame="estimator_camera_raw",
+        units="meters",
+        source="synthetic",
+    )
+
+
 def _femur_test_model() -> OsimModel:
     # hip_r and walker_knee_r hang off ground -> their centres are the offsets.
     c_hip = [0.1, 0.9, 0.05]
@@ -115,21 +136,22 @@ def _femur_test_model() -> OsimModel:
     return OsimModel(name="seg", bodies=bodies, joints=joints, markers=[])
 
 
-def test_segment_maps_joint_centers_onto_keypoints():
+def test_long_bone_maps_joint_centers_onto_rig_joints():
     model = _femur_test_model()
     centers = joint_centers(model)
-    kp_p = [1.0, 2.0, 3.0]
-    kp_d = [1.0, 1.0, 3.0]
-    sample = _sample_with_kps({10: kp_p, 12: kp_d})
+    j_p = [1.0, 2.0, 3.0]
+    j_d = [1.0, 1.0, 3.0]
+    # femur_r is fit between rig joints 18 (right_hip) and 19 (right_knee).
+    sample = _sample_with_joints({18: j_p, 19: j_d})
 
     transforms = compute_segment_transforms(
         sample, model, global_transform=_identity_similarity()
     )
 
     femur = transforms["femur_r"]
-    # global transform is identity, so targets == the raw keypoints.
-    np.testing.assert_allclose(_apply(femur, centers["hip_r"]), kp_p, atol=1e-9)
-    np.testing.assert_allclose(_apply(femur, centers["walker_knee_r"]), kp_d, atol=1e-9)
+    # global transform is identity, so targets == the raw rig joints.
+    np.testing.assert_allclose(_apply(femur, centers["hip_r"]), j_p, atol=1e-9)
+    np.testing.assert_allclose(_apply(femur, centers["walker_knee_r"]), j_d, atol=1e-9)
 
     # Trunk receives the identity.
     np.testing.assert_allclose(transforms["pelvis"], np.eye(4), atol=1e-12)
@@ -268,7 +290,7 @@ def test_volumetric_landmark_skipped_below_min_pairs():
 
 def test_every_body_has_a_correction():
     model = _femur_test_model()
-    sample = _sample_with_kps({10: [1.0, 2.0, 3.0], 12: [1.0, 1.0, 3.0]})
+    sample = _sample_with_joints({18: [1.0, 2.0, 3.0], 19: [1.0, 1.0, 3.0]})
     transforms = compute_segment_transforms(
         sample, model, global_transform=_identity_similarity()
     )
@@ -292,14 +314,14 @@ def test_real_segment_transforms():
     transforms = compute_segment_transforms(sample, model, global_transform)
     centers = joint_centers(model)
 
-    # Each long bone maps its joint centres exactly onto the MHR targets.
-    for body, (joint_p, joint_d, kp_p, kp_d) in SEGMENT_TABLE.items():
+    # Each long bone maps its joint centres exactly onto the MHR rig joints.
+    for body, (joint_p, joint_d, mhr_p, mhr_d) in SEGMENT_TABLE.items():
         matrix = transforms[body]
         t_p = np.asarray(
-            global_transform.apply(np.asarray(sample.keypoints[kp_p], dtype=float))
+            global_transform.apply(np.asarray(sample.joint_coords[mhr_p], dtype=float))
         )
         t_d = np.asarray(
-            global_transform.apply(np.asarray(sample.keypoints[kp_d], dtype=float))
+            global_transform.apply(np.asarray(sample.joint_coords[mhr_d], dtype=float))
         )
         np.testing.assert_allclose(_apply(matrix, centers[joint_p]), t_p, atol=1e-9)
         np.testing.assert_allclose(_apply(matrix, centers[joint_d]), t_d, atol=1e-9)
@@ -364,3 +386,97 @@ def test_real_landmark_extremities():
         residual = float(np.sqrt(np.mean(np.sum((aligned - target) ** 2, axis=1))))
         assert np.isfinite(residual)
         assert residual < 0.1
+
+
+_LONG_BONES = (
+    "femur_r",
+    "femur_l",
+    "tibia_r",
+    "tibia_l",
+    "humerus_r",
+    "humerus_l",
+    "radius_r",
+    "radius_l",
+    "ulna_r",
+    "ulna_l",
+)
+_LR_PAIRS = (
+    ("femur_r", "femur_l"),
+    ("tibia_r", "tibia_l"),
+    ("humerus_r", "humerus_l"),
+    ("radius_r", "radius_l"),
+    ("ulna_r", "ulna_l"),
+)
+
+
+def _bone_scale(transforms: dict, body: str) -> float:
+    # The linear part of a long-bone correction is scale * rotation, so the mean
+    # column norm recovers the per-segment scale factor.
+    return float(np.linalg.norm(transforms[body][:3, :3], axis=0).mean())
+
+
+@pytest.mark.skipif(
+    not (EXT_BASIS.exists() and REAL_OSIM.exists()),
+    reason="extended basis / real osim not present",
+)
+def test_long_bones_scale_with_extended_basis_scale_block():
+    # Regression for the keypoint->rig-joint switch. Rig joints carry dJ[45:73], so
+    # the scale block now changes long-bone lengths; with keypoints (dKP[45:73]==0)
+    # every long bone stayed at exactly the identity scale (0% change).
+    from mesh2marker.morph import load_shape_basis, morph
+    from mesh2marker.osim import parse_osim
+
+    basis = load_shape_basis(EXT_BASIS)
+    model = parse_osim(REAL_OSIM)
+
+    def bone_scales(betas):
+        sample = morph(basis, betas)
+        gt, _, _ = align_mhr_to_opensim(sample, model)
+        transforms = compute_segment_transforms(sample, model, gt)
+        return {body: _bone_scale(transforms, body) for body in _LONG_BONES}
+
+    identity_only = [0.0] * 73
+    identity_only[5] = 1.0
+    with_scale = list(identity_only)
+    for i in range(45, 73):  # every live scale direction active
+        if i not in _DEAD_SCALE:
+            with_scale[i] = 1.0
+
+    base = bone_scales(identity_only)
+    scaled = bone_scales(with_scale)
+
+    # Every long bone now follows the morphology's scale block (was 0% before).
+    for body in _LONG_BONES:
+        rel = abs(scaled[body] - base[body]) / base[body]
+        assert rel > 1e-3, f"{body} did not scale ({rel:.1e})"
+
+    # Left/right symmetry holds under the same (symmetric) scale vector.
+    for right, left in _LR_PAIRS:
+        np.testing.assert_allclose(scaled[right], scaled[left], rtol=1e-3)
+
+
+@pytest.mark.skipif(
+    not (EXT_BASIS.exists() and REAL_OSIM.exists()),
+    reason="extended basis / real osim not present",
+)
+def test_long_bone_lengths_are_plausible_and_symmetric_at_rest():
+    from mesh2marker.morph import load_shape_basis, morph
+
+    basis = load_shape_basis(EXT_BASIS)
+    sample = morph(basis, [0.0] * 73)  # rest pose
+
+    from mesh2marker.segment_align import SEGMENT_TABLE
+
+    lengths = {}
+    for body, (_, _, mhr_p, mhr_d) in SEGMENT_TABLE.items():
+        lengths[body] = float(
+            np.linalg.norm(sample.joint_coords[mhr_d] - sample.joint_coords[mhr_p])
+        )
+
+    # Adult-plausible long-bone lengths (metres).
+    for body in _LONG_BONES:
+        assert 0.15 < lengths[body] < 0.55, f"{body} length {lengths[body]:.3f} m"
+
+    # The MHR template is symmetric: left/right rest lengths match to < 1 mm.
+    for right, left in _LR_PAIRS:
+        assert abs(lengths[right] - lengths[left]) < 1e-3

@@ -6,10 +6,13 @@ A single global similarity (see :mod:`mesh2marker.alignment`) places the lower b
 and trunk well but leaves a residual gap and cannot follow limbs whose pose differs
 (the MHR rest pose has arms raised in an A-pose, the OpenSim neutral pose has arms
 down). No global rigid transform fixes that. Instead we align each long bone between
-its two joint centres: knowing both joint centres on each side (MHR keypoints via
-mhr70, OpenSim centres via :func:`mesh2marker.kinematics.joint_centers`), we fit a
-rigid+scale transform per bone so its two ends land on the two corresponding MHR
-joints. The bone then sits under the right place of the mesh and the limbs follow.
+its two joint centres: knowing both joint centres on each side (MHR rig joints from
+``sample.joint_coords``, OpenSim centres via
+:func:`mesh2marker.kinematics.joint_centers`), we fit a rigid+scale transform per
+bone so its two ends land on the two corresponding MHR joints. The bone then sits
+under the right place of the mesh and the limbs follow.
+Rig joints (not the 70 keypoints) carry the scale block of the extended shape basis,
+so bones scale with the subject's full morphology, not the identity alone.
 
 The mesh itself stays at its global-pre-alignment position; the bones move onto it.
 Picking records the MHR vertex INDEX (fixed topology), so it stays exact regardless
@@ -31,19 +34,25 @@ from .mhr import MhrSample
 from .osim import OsimModel
 from .procrustes import SimilarityTransform, procrustes_align
 
-# body -> (proximal OpenSim joint, distal OpenSim joint, proximal MHR kp, distal kp)
+# body -> (proximal OpenSim joint, distal OpenSim joint, proximal MHR joint, distal)
+# The MHR-side indices are into the 127-joint rig (``sample.joint_coords``), NOT the
+# 70 keypoints. Rig joints carry the scale block of the extended shape basis
+# (``dJ[45:73]`` is filled, ``dKP[45:73]`` is zero), so long bones scale with the
+# subject's full morphology -- not the identity-only scale the keypoints would give.
+# Joints also avoid two keypoints (wrist, ankle) that degenerate at the rest pose.
+# Indices validated by the upstream pipeline (left/right symmetry, plausible lengths).
 SEGMENT_TABLE: dict[str, tuple[str, str, int, int]] = {
-    "femur_r": ("hip_r", "walker_knee_r", 10, 12),
-    "femur_l": ("hip_l", "walker_knee_l", 9, 11),
-    "tibia_r": ("walker_knee_r", "ankle_r", 12, 14),
-    "tibia_l": ("walker_knee_l", "ankle_l", 11, 13),
-    "humerus_r": ("acromial_r", "elbow_r", 6, 8),
-    "humerus_l": ("acromial_l", "elbow_l", 5, 7),
+    "femur_r": ("hip_r", "walker_knee_r", 18, 19),
+    "femur_l": ("hip_l", "walker_knee_l", 2, 3),
+    "tibia_r": ("walker_knee_r", "ankle_r", 19, 24),
+    "tibia_l": ("walker_knee_l", "ankle_l", 3, 8),
+    "humerus_r": ("acromial_r", "elbow_r", 39, 40),
+    "humerus_l": ("acromial_l", "elbow_l", 75, 76),
     # Forearm: ulna and radius share the elbow -> wrist segment.
-    "ulna_r": ("elbow_r", "radius_hand_r", 8, 41),
-    "radius_r": ("elbow_r", "radius_hand_r", 8, 41),
-    "ulna_l": ("elbow_l", "radius_hand_l", 7, 62),
-    "radius_l": ("elbow_l", "radius_hand_l", 7, 62),
+    "ulna_r": ("elbow_r", "radius_hand_r", 40, 41),
+    "radius_r": ("elbow_r", "radius_hand_r", 40, 41),
+    "ulna_l": ("elbow_l", "radius_hand_l", 76, 77),
+    "radius_l": ("elbow_l", "radius_hand_l", 76, 77),
 }
 
 # body -> ancestor body whose correction it inherits.
@@ -189,9 +198,10 @@ def compute_segment_transforms(
     centers = joint_centers(model)
     n_kp = sample.keypoints.shape[0]
     n_verts = sample.verts.shape[0]
+    n_joints = sample.joint_coords.shape[0]
 
-    def kp_world(idx: int) -> np.ndarray:
-        point = np.asarray(sample.keypoints[idx], dtype=float)
+    def joint_world(idx: int) -> np.ndarray:
+        point = np.asarray(sample.joint_coords[idx], dtype=float)
         return np.asarray(global_transform.apply(point), dtype=float)
 
     def mhr_world(source_kind: str, idx: int) -> np.ndarray | None:
@@ -208,16 +218,16 @@ def compute_segment_transforms(
 
     transforms: dict[str, np.ndarray] = {}
 
-    for body, (joint_p, joint_d, kp_p, kp_d) in SEGMENT_TABLE.items():
+    for body, (joint_p, joint_d, mhr_p, mhr_d) in SEGMENT_TABLE.items():
         if joint_p not in centers or joint_d not in centers:
             continue
-        if not (0 <= kp_p < n_kp and 0 <= kp_d < n_kp):
+        if not (0 <= mhr_p < n_joints and 0 <= mhr_d < n_joints):
             continue
         matrix = _long_bone_matrix(
             np.asarray(centers[joint_p], dtype=float),
             np.asarray(centers[joint_d], dtype=float),
-            kp_world(kp_p),
-            kp_world(kp_d),
+            joint_world(mhr_p),
+            joint_world(mhr_d),
         )
         if matrix is not None:
             transforms[body] = matrix

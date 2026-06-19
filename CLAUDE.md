@@ -167,6 +167,14 @@ vector, length **73 = 45 identity + 28 scale**:
   keypoints for scale-only changes — fine for marker placement (which reads vertices), but any
   downstream stage needing scale-dependent keypoints must recompute them.
 
+Consequence for the skeleton fit: `segment_align.compute_segment_transforms` scales each long
+bone (femur/tibia/humerus/forearm, L+R) from the **127-joint MHR rig** (`sample.joint_coords`,
+which carries `dJ[45:73]`), NOT from the 70 keypoints (`dKP[45:73]==0`). With keypoints the long
+bones stayed at identity scale for any scale-only morphology; with rig joints they now scale with
+the subject's full morphology. The joint indices (hip/knee/ankle/shoulder/elbow/wrist, L+R) come
+from the pipeline. Pelvis and torso keep their vertex/keypoint landmark fit (already scale-aware
+via `dV`); head and hands stay on keypoints (no rig joint in the provided map, non-critical).
+
 C2 (per-subject .osim generation) now consumes a single concatenated 73-vector
 `[shape_params(45), scale_params(28)]`, passed to `morph(basis, betas)` / the headless
 `mesh2marker generate --basis … --betas …` CLI. `morph` is component-agnostic: it reads
