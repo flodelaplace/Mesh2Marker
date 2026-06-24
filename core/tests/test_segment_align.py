@@ -409,6 +409,43 @@ _LR_PAIRS = (
 )
 
 
+# Anatomical reference: the mhr70 keypoint pair bounding each long bone. The rig-joint
+# axis used for the fit must agree with it at the rest pose -- guards against a
+# mis-identified joint index (the foot/toe joint once tilted the tibia ~20 deg out of
+# the mesh).
+_KP_REFERENCE = {
+    "femur_r": (10, 12),
+    "femur_l": (9, 11),
+    "tibia_r": (12, 14),
+    "tibia_l": (11, 13),
+    "humerus_r": (6, 8),
+    "humerus_l": (5, 7),
+    "radius_r": (8, 41),
+    "radius_l": (7, 62),
+    "ulna_r": (8, 41),
+    "ulna_l": (7, 62),
+}
+
+
+def _unit_axis(p, q) -> np.ndarray:
+    v = np.asarray(q, float) - np.asarray(p, float)
+    return v / np.linalg.norm(v)
+
+
+@pytest.mark.skipif(not EXT_BASIS.exists(), reason="extended basis not present")
+def test_long_bone_joint_axes_align_with_keypoint_axes_at_rest():
+    from mesh2marker.morph import load_shape_basis, morph
+    from mesh2marker.segment_align import SEGMENT_TABLE
+
+    sample = morph(load_shape_basis(EXT_BASIS), [0.0] * 73)
+    for body, (kp_p, kp_d) in _KP_REFERENCE.items():
+        _, _, j_p, j_d = SEGMENT_TABLE[body]
+        kp_axis = _unit_axis(sample.keypoints[kp_p], sample.keypoints[kp_d])
+        j_axis = _unit_axis(sample.joint_coords[j_p], sample.joint_coords[j_d])
+        angle = np.degrees(np.arccos(np.clip(float(kp_axis @ j_axis), -1.0, 1.0)))
+        assert angle < 6.0, f"{body} joint axis off by {angle:.1f} deg from keypoints"
+
+
 def _bone_scale(transforms: dict, body: str) -> float:
     # The linear part of a long-bone correction is scale * rotation, so the mean
     # column norm recovers the per-segment scale factor.

@@ -44,8 +44,11 @@ from .procrustes import SimilarityTransform, procrustes_align
 SEGMENT_TABLE: dict[str, tuple[str, str, int, int]] = {
     "femur_r": ("hip_r", "walker_knee_r", 18, 19),
     "femur_l": ("hip_l", "walker_knee_l", 2, 3),
-    "tibia_r": ("walker_knee_r", "ankle_r", 19, 24),
-    "tibia_l": ("walker_knee_l", "ankle_l", 3, 8),
+    # Ankle = rig joint 20/4 (kinematically knee+1, coincident with the ankle
+    # keypoint at rest). The pipeline's "ankle" 24/8 is ~15 cm more distal (the
+    # foot/toe joint) and tilted the tibia ~20 deg forward, out of the mesh.
+    "tibia_r": ("walker_knee_r", "ankle_r", 19, 20),
+    "tibia_l": ("walker_knee_l", "ankle_l", 3, 4),
     "humerus_r": ("acromial_r", "elbow_r", 39, 40),
     "humerus_l": ("acromial_l", "elbow_l", 75, 76),
     # Forearm: ulna and radius share the elbow -> wrist segment.
