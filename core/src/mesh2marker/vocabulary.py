@@ -4,8 +4,9 @@ This module is the ONE place where the correspondence file's vocabulary is
 defined, and it must stay aligned with the Mesh2Sim shared contract
 (``mesh2sim.contracts``). The values below are the FULL set for the production
 model ``Pose2Sim_Wholebody`` (frozen snapshot in ``reference/opensim_model.json``):
-the 73 marker names are the shared landmark vocabulary, and the 30 body names are
-the model's segments.
+the shared landmark vocabulary is the 73 stock marker names plus ``XIPH`` (the
+Mesh2Sim add-on marker on ``torso``, registered in ``mesh2sim.contracts``), and the
+30 body names are the model's segments.
 
 Names are case-sensitive and must be used verbatim. Gotchas worth remembering:
 ``"Abdomen"`` is capitalized; ``"RWrist_hand"`` / ``"LWrist_hand"`` use an
@@ -45,6 +46,8 @@ LANDMARK_NAMES: frozenset[str] = frozenset(
         "C7",
         "RCLAV",
         "LCLAV",
+        # Mesh2Sim add-on marker (xiphoid, registered in mesh2sim.contracts)
+        "XIPH",
         # Arms
         "RLEL",
         "RMEL",

@@ -448,6 +448,11 @@
         "location": "0.04 0.38 -0.017"
       },
       {
+        "name": "XIPH",
+        "parent_body": "torso",
+        "location": "0.18110905 0.20293777 6.2644e-05"
+      },
+      {
         "name": "RLEL",
         "parent_body": "humerus_r",
         "location": "0.0351089 -0.262069 0.0207564"
