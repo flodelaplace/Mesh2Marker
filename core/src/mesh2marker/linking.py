@@ -244,7 +244,7 @@ def validate_against_known(
 _BONY_PATTERNS = (
     "asi", "psi", "mal", "lfc", "mfc", "lel", "mel", "cal", "toe", "mt5",
     "acr", "c7", "htop", "nose", "eye", "ear", "clav", "thumb", "index",
-    "pinky", "wrist",
+    "pinky", "wrist", "gtr", "xiph",
 )
 
 

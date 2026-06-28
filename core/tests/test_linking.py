@@ -247,7 +247,9 @@ def test_validate_against_known_match_and_mismatch():
 
 
 def test_suggest_fixed_bony_cases():
-    for name in ("RASI", "RLMAL", "RMFC", "RACR", "C7", "HTOP", "Nose", "RWrist_hand"):
+    bony = ("RASI", "RLMAL", "RMFC", "RACR", "C7", "HTOP", "Nose", "RWrist_hand",
+            "RGTR", "LGTR", "XIPH")
+    for name in bony:
         assert suggest_fixed(name) is True, name
 
 

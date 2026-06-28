@@ -453,6 +453,16 @@
         "location": "0.18110905 0.20293777 6.2644e-05"
       },
       {
+        "name": "RGTR",
+        "parent_body": "femur_r",
+        "location": "0.0 -0.06 0.07"
+      },
+      {
+        "name": "LGTR",
+        "parent_body": "femur_l",
+        "location": "0.0 -0.06 -0.07"
+      },
+      {
         "name": "RLEL",
         "parent_body": "humerus_r",
         "location": "0.0351089 -0.262069 0.0207564"
