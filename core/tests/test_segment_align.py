@@ -446,6 +446,49 @@ def test_long_bone_joint_axes_align_with_keypoint_axes_at_rest():
         assert angle < 6.0, f"{body} joint axis off by {angle:.1f} deg from keypoints"
 
 
+def test_torso_anchors_are_all_skin_vertices():
+    # All torso anchors must be skin vertices: they carry the scale block of the
+    # extended basis, so the cloud scales coherently. Mixing in keypoints (whose scale
+    # block is zero) distorted the cloud under a scale morph and rotated the torso
+    # forward (XIPH drifted ~20 cm, c_spine2's X flipped sign).
+    kinds = {kind for kind, _, _ in LANDMARK_SEGMENTS["torso"]}
+    assert kinds == {"vertex"}, kinds
+    assert len(LANDMARK_SEGMENTS["torso"]) >= 4  # well-distributed, not the top band
+
+
+@pytest.mark.skipif(
+    not (EXT_BASIS.exists() and REAL_OSIM.exists()),
+    reason="extended basis / real osim not present",
+)
+def test_torso_rotation_stable_under_scale_morph():
+    # Regression for the torso-forward-rotation bug: the torso segment rotation must be
+    # nearly identical at rest and under a strong scale morph.
+    from mesh2marker.morph import load_shape_basis, morph
+    from mesh2marker.osim import parse_osim
+
+    basis = load_shape_basis(EXT_BASIS)
+    model = parse_osim(REAL_OSIM)
+
+    def torso_rotation(betas):
+        sample = morph(basis, betas)
+        gt, _, _ = align_mhr_to_opensim(sample, model)
+        m = compute_segment_transforms(sample, model, gt)["torso"]
+        r = m[:3, :3]
+        return r / np.linalg.norm(r, axis=0)  # strip the (uniform) scale
+
+    r_rest = torso_rotation([0.0] * 73)
+    scaled = [0.0] * 73
+    for i in range(45, 73):
+        if i not in _DEAD_SCALE:
+            scaled[i] = 1.5
+    r_scaled = torso_rotation(scaled)
+
+    angle = np.degrees(
+        np.arccos(np.clip((np.trace(r_rest.T @ r_scaled) - 1.0) / 2.0, -1.0, 1.0))
+    )
+    assert angle < 3.0, f"torso rotated {angle:.1f} deg under a scale-only morph"
+
+
 def _bone_scale(transforms: dict, body: str) -> float:
     # The linear part of a long-bone correction is scale * rotation, so the mean
     # column norm recovers the per-segment scale factor.

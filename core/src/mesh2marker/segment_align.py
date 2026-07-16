@@ -111,11 +111,21 @@ LANDMARK_SEGMENTS: dict[str, list[tuple[str, int, str]]] = {
         ("vertex", 7319, "RPSI"),
         ("vertex", 6216, "LPSI"),
     ],
+    # Torso: ALL-skin-vertex anchors so the cloud scales COHERENTLY with the subject's
+    # morphology. The former keypoint anchors (RACR/LACR/c_neck) do NOT carry the scale
+    # block of the extended basis (dKP[45:73]==0) while C7 (a vertex) does, so under a
+    # scale morph the mixed cloud distorted and the Procrustes rotated the torso forward
+    # (XIPH drifted ~20 cm, c_spine2's X flipped sign). Six well-distributed vertices --
+    # lateral acromia, posterior C7 + c_spine2, anterior clavicles -- also break the
+    # top-band coplanarity that made the fit ill-conditioned. Indices are fixed MHR
+    # topology (same anatomy for every subject).
     "torso": [
-        ("keypoint", 68, "RACR"),
-        ("keypoint", 67, "LACR"),
-        ("keypoint", 69, "c_neck"),
+        ("vertex", 7878, "RACR"),
+        ("vertex", 6620, "LACR"),
         ("vertex", 5768, "C7"),
+        ("vertex", 5753, "c_spine2"),
+        ("vertex", 7022, "RCLAV"),
+        ("vertex", 5787, "LCLAV"),
     ],
 }
 
