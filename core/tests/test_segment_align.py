@@ -483,6 +483,69 @@ def test_landmark_map_fits_an_otherwise_identity_body():
         np.testing.assert_allclose(got, verts[idx], atol=1e-6)
 
 
+def test_map_sewing_pulls_parent_junction_toward_child():
+    # A map-fit child (e.g. head) sews its parent (torso) at their shared joint, so the
+    # parent's placement of that joint moves toward the child's -- the mechanism that
+    # pulls the torso's neck end forward. Verify the junction gap shrinks vs a plain
+    # parent-only Procrustes.
+    from mesh2marker.procrustes import procrustes_align
+    from mesh2marker.segment_align import similarity_to_matrix
+
+    # torso (parent) hangs off ground; head (child) hangs off torso via head_torso.
+    tm = {f"T{i}": v for i, v in enumerate([[0.1, 0, 0], [0, 0, 0.1], [-0.1, 0.05, 0]])}
+    hm = {
+        f"H{i}": v
+        for i, v in enumerate([[0.05, 0.6, 0], [0, 0.6, 0.05], [0, 0.55, 0]])
+    }
+    markers = [OsimMarker(n, "torso", v) for n, v in tm.items()]
+    markers += [OsimMarker(n, "head", v) for n, v in hm.items()]
+    bodies = [OsimBody("torso", []), OsimBody("head", [])]
+    joints = [
+        _joint("ground_torso", "ground", "torso", [0, 0, 0]),
+        _joint("head_torso", "torso", "head", [0, 0.5, 0]),
+    ]
+    model = OsimModel(name="m", bodies=bodies, joints=joints, markers=markers)
+
+    # Targets: torso markers stay put (torso ~identity); head markers shift +0.12 in X.
+    shift = np.array([0.12, 0.0, 0.0])
+    verts = []
+    order = list(tm) + list(hm)
+    for n in order:
+        base = np.array(tm.get(n, hm.get(n)), dtype=float)
+        verts.append(base + (shift if n in hm else 0.0))
+    verts = np.array(verts)
+    landmark_map = {n: i for i, n in enumerate(order)}
+    sample = MhrSample(
+        verts=verts,
+        faces=np.zeros((1, 3), dtype=np.int32),
+        joint_coords=np.zeros((127, 3), dtype=np.float32),
+        keypoints=np.zeros((70, 3), dtype=np.float32),
+        frame_index=0,
+        coordinate_frame="estimator_camera_raw",
+        units="meters",
+        source="synthetic",
+    )
+
+    transforms = compute_segment_transforms(
+        sample, model, _identity_similarity(), landmark_map=landmark_map
+    )
+    joint = np.array([0.0, 0.5, 0.0])  # head_torso centre (identity global)
+
+    def place(matrix):
+        return matrix[:3, :3] @ joint + matrix[:3, 3]
+
+    head_at = place(transforms["head"])
+    gap_sewn = float(np.linalg.norm(place(transforms["torso"]) - head_at))
+
+    # Plain torso-only fit (no sewing) for the baseline gap.
+    src = np.array([tm[n] for n in tm], dtype=float)
+    tgt = np.array([verts[landmark_map[n]] for n in tm], dtype=float)
+    plain = similarity_to_matrix(procrustes_align(src, tgt, with_scale=True))
+    gap_plain = float(np.linalg.norm(place(plain) - head_at))
+
+    assert gap_sewn < gap_plain  # sewing closes the junction
+
+
 def test_torso_anchors_are_all_skin_vertices():
     # All torso anchors must be skin vertices: they carry the scale block of the
     # extended basis, so the cloud scales coherently. Mixing in keypoints (whose scale

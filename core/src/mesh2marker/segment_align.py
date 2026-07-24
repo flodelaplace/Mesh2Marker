@@ -293,14 +293,42 @@ def compute_segment_transforms(
             if target is None:
                 continue
             grouped.setdefault(body, []).append((marker_world[marker_name], target))
-        for body, pairs in grouped.items():
-            if len(pairs) >= LANDMARK_MIN_PAIRS:
-                fit = procrustes_align(
+
+        def _fit_pairs(pairs: list[tuple[np.ndarray, np.ndarray]]) -> np.ndarray:
+            return similarity_to_matrix(
+                procrustes_align(
                     np.asarray([s for s, _ in pairs], dtype=float),
                     np.asarray([t for _, t in pairs], dtype=float),
                     with_scale=True,
                 )
-                transforms[body] = similarity_to_matrix(fit)
+            )
+
+        map_pairs: dict[str, list[tuple[np.ndarray, np.ndarray]]] = {}
+        for body, pairs in grouped.items():
+            if len(pairs) >= LANDMARK_MIN_PAIRS:
+                map_pairs[body] = pairs
+                transforms[body] = _fit_pairs(pairs)
+
+        # Sew each map-fit body to its map-fit parent at their shared joint: a
+        # well-placed child pulls the parent's junction into place. Concretely the
+        # head (fit on its own markers) pulls the torso's neck end forward, so the
+        # cervical spine -- rigidly part of the torso -- stops protruding backward.
+        parent_joint = {jt.child_body: (jt.parent_body, jt.name) for jt in model.joints}
+        junctions: dict[str, list[tuple[np.ndarray, np.ndarray]]] = {}
+        for child in map_pairs:
+            info = parent_joint.get(child)
+            if info is None:
+                continue
+            parent, joint_name = info
+            if parent not in map_pairs or joint_name not in centers:
+                continue
+            jn = np.asarray(centers[joint_name], dtype=float)
+            child_m = transforms[child]
+            placed = child_m[:3, :3] @ jn + child_m[:3, 3]
+            junctions.setdefault(parent, []).append((jn, placed))
+        for parent, extra in junctions.items():
+            weight = max(1, round(len(map_pairs[parent]) / 3))
+            transforms[parent] = _fit_pairs(map_pairs[parent] + extra * weight)
 
     for body, source_body in INHERIT.items():
         if body not in transforms and source_body in transforms:
