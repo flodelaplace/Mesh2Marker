@@ -632,7 +632,10 @@ class MESH2MARKER_OT_load_opensim(Operator):
                 sample = _current_sample(props)  # follows the morph if a basis is loaded
                 global_transform, _, _ = align_mhr_to_opensim(sample, model)
                 seg_transforms = compute_segment_transforms(
-                    sample, model, global_transform
+                    sample,
+                    model,
+                    global_transform,
+                    landmark_map=_landmark_map_from_props(props),
                 )
             except (OSError, ValueError) as exc:
                 self.report({"WARNING"}, f"Per-segment align skipped: {exc}")
