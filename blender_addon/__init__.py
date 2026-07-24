@@ -439,6 +439,8 @@ class MarkerLinkItem(PropertyGroup):
     marker_name: StringProperty(default="")
     vertex_indices: StringProperty(default="")
     local_offset: StringProperty(default="")
+    # Vertices as first loaded (import), to diff against on export. Empty = no baseline.
+    baseline_vertices: StringProperty(default="")
     fixed: BoolProperty(
         name="Bony",
         description="True = bony landmark (rigid), False = soft tissue",
@@ -1133,6 +1135,56 @@ class MESH2MARKER_OT_auto_link(Operator):
         return {"FINISHED"}
 
 
+class MESH2MARKER_OT_relink_nearest(Operator):
+    """Re-link EVERY marker to its nearest MHR vertex, overwriting existing links."""
+
+    bl_idname = "mesh2marker.relink_nearest"
+    bl_label = "Relink all to nearest vertex"
+    bl_description = (
+        "Set each marker's linked vertex to the mesh vertex nearest its current "
+        "position, overwriting a loaded correspondence. The markers stay put; only "
+        "the vertices move. Use when the OpenSim markers are anatomically correct and "
+        "you want the vertices to match them; refine any outliers by hand after"
+    )
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        props = context.scene.mesh2marker
+        osim_path = bpy.path.abspath(props.osim_path.strip()) if props.osim_path else ""
+        if not _has_sample_source(props):
+            self.report({"ERROR"}, "Load an MHR mesh (.npz) or a shape basis first")
+            return {"CANCELLED"}
+        if not osim_path:
+            self.report({"ERROR"}, "OSIM path is empty")
+            return {"CANCELLED"}
+
+        _reload_core()
+        from mesh2marker.linking import auto_link_markers
+
+        try:
+            # _compute_alignment uses the loaded links as the map, so markers sit at
+            # their displayed (map-driven) positions when we search for the nearest.
+            sample, model, gt, seg = _compute_alignment(props)
+            proposed = auto_link_markers(model, sample.verts, gt, seg)
+        except (OSError, ValueError) as exc:
+            self.report({"ERROR"}, f"Relink failed: {exc}")
+            return {"CANCELLED"}
+
+        n = 0
+        for marker_name, vertex_index in proposed.items():
+            _, item = _find_link_item(props, marker_name)
+            if item is None:
+                item = props.links.add()
+                item.marker_name = marker_name
+            # Overwrite only the vertex; keep local_offset / fixed (markers stay put).
+            item.vertex_indices = str(int(vertex_index))
+            n += 1
+
+        highlight_active_marker(context)
+        self.report({"INFO"}, f"Relinked {n} markers to their nearest vertex")
+        return {"FINISHED"}
+
+
 class MESH2MARKER_OT_suggest_fixed(Operator):
     """Heuristically suggest bony/soft for all linked markers (review afterwards)."""
 
@@ -1344,7 +1396,38 @@ class MESH2MARKER_OT_export_correspondence(Operator):
             self.report({"ERROR"}, f"Export rejected by validation: {exc}")
             return {"CANCELLED"}
 
-        self.report({"INFO"}, f"Exported {len(links)} markers -> {self.filepath}")
+        # Recap of vertex changes vs the correspondence that was loaded (baseline set
+        # at import). Written next to the JSON as a sidecar for traceability.
+        changed, added = [], []
+        for item in props.links:
+            if not item.vertex_indices:
+                continue
+            before, after = item.baseline_vertices, item.vertex_indices
+            if not before:
+                added.append((item.marker_name, after))
+            elif before != after:
+                changed.append((item.marker_name, before, after))
+
+        log_path = Path(self.filepath).with_suffix(".changes.txt")
+        try:
+            lines = ["# Vertex changes vs the loaded correspondence"]
+            lines.append("# marker: before -> after")
+            for marker, before, after in sorted(changed):
+                lines.append(f"{marker}: {before} -> {after}")
+            for marker, after in sorted(added):
+                lines.append(f"{marker}: (no baseline) -> {after}")
+            lines.append(
+                f"# {len(changed)} changed, {len(added)} new, {len(links)} total exported"
+            )
+            log_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            wrote_log = True
+        except OSError:
+            wrote_log = False
+
+        msg = f"Exported {len(links)} markers -> {self.filepath}"
+        if wrote_log and (changed or added):
+            msg += f" | {len(changed)} vertex changes -> {log_path.name}"
+        self.report({"INFO"}, msg)
         return {"FINISHED"}
 
 
@@ -1462,6 +1545,7 @@ class MESH2MARKER_OT_import_correspondence(Operator):
             item = props.links.add()
             item.marker_name = link["marker"]
             item.vertex_indices = ",".join(str(i) for i in link["vertex_indices"])
+            item.baseline_vertices = item.vertex_indices  # snapshot for the export diff
             item.fixed = bool(link.get("fixed", False))
             offset = link.get("local_offset")
             if offset:
@@ -1561,6 +1645,7 @@ class MESH2MARKER_PT_panel(Panel):
             rows=6,
         )
         col.operator(MESH2MARKER_OT_auto_link.bl_idname, icon="FILE_REFRESH")
+        col.operator(MESH2MARKER_OT_relink_nearest.bl_idname, icon="TRACKER")
         row = col.row(align=True)
         row.operator(MESH2MARKER_OT_enter_picking.bl_idname, icon="EDITMODE_HLT")
         row.operator(MESH2MARKER_OT_exit_picking.bl_idname, icon="OBJECT_DATAMODE")
@@ -1610,6 +1695,7 @@ _CLASSES = (
     MESH2MARKER_OT_toggle_transparency,
     MESH2MARKER_UL_markers,
     MESH2MARKER_OT_auto_link,
+    MESH2MARKER_OT_relink_nearest,
     MESH2MARKER_OT_suggest_fixed,
     MESH2MARKER_OT_enter_picking,
     MESH2MARKER_OT_exit_picking,
