@@ -193,6 +193,7 @@ def compute_segment_transforms(
     sample: MhrSample,
     model: OsimModel,
     global_transform: SimilarityTransform | None = None,
+    landmark_map: dict[str, int] | None = None,
 ) -> dict[str, np.ndarray]:
     """One per-body similarity correction (4x4, OpenSim world frame) for every body.
 
@@ -204,6 +205,14 @@ def compute_segment_transforms(
     and any uncovered body get the identity. ``global_transform`` maps MHR landmarks
     into the OpenSim world frame; if omitted it is computed via
     :func:`align_mhr_to_opensim`.
+
+    ``landmark_map`` (marker name -> MHR vertex index, e.g. a loaded correspondence)
+    is optional and model-agnostic: any body NOT already fit by the long-bone or the
+    hardcoded landmark step, but carrying >=3 of the map's markers, is fit by a
+    Procrustes on those (source = neutral marker world, target = mapped skin vertex).
+    This is how an arbitrary model whose marker names differ from the Pose2Sim
+    vocabulary (e.g. the SKEL / bsm marker set) still gets its head, hands, pelvis and
+    torso aligned. With ``landmark_map=None`` the behaviour is exactly the legacy one.
     """
     if global_transform is None:
         global_transform, _, _ = align_mhr_to_opensim(sample, model)
@@ -268,8 +277,33 @@ def compute_segment_transforms(
             )
             transforms[body] = similarity_to_matrix(fit)
 
+    # Map-driven fits (model-agnostic): fill any body not yet covered above but
+    # carrying >=3 of the correspondence map's markers. Runs before INHERIT so a
+    # map-fit ancestor (e.g. pelvis) propagates to its children (e.g. sacrum).
+    if landmark_map:
+        body_of: dict[str, str] = {}
+        for mk in model.markers:
+            body_of.setdefault(mk.name, mk.parent_body)
+        grouped: dict[str, list[tuple[np.ndarray, np.ndarray]]] = {}
+        for marker_name, vertex_index in landmark_map.items():
+            body = body_of.get(marker_name)
+            if body is None or body in transforms or marker_name not in marker_world:
+                continue
+            target = mhr_world("vertex", int(vertex_index))
+            if target is None:
+                continue
+            grouped.setdefault(body, []).append((marker_world[marker_name], target))
+        for body, pairs in grouped.items():
+            if len(pairs) >= LANDMARK_MIN_PAIRS:
+                fit = procrustes_align(
+                    np.asarray([s for s, _ in pairs], dtype=float),
+                    np.asarray([t for _, t in pairs], dtype=float),
+                    with_scale=True,
+                )
+                transforms[body] = similarity_to_matrix(fit)
+
     for body, source_body in INHERIT.items():
-        if source_body in transforms:
+        if body not in transforms and source_body in transforms:
             transforms[body] = transforms[source_body].copy()
 
     # Every body of the model gets a correction; trunk and uncovered -> identity.

@@ -296,8 +296,27 @@ def _compute_alignment(props):
     sample = _current_sample(props)
     model = parse_osim(osim_path)
     global_transform, _, _ = align_mhr_to_opensim(sample, model)
-    seg_transforms = compute_segment_transforms(sample, model, global_transform)
+    seg_transforms = compute_segment_transforms(
+        sample, model, global_transform, landmark_map=_landmark_map_from_props(props)
+    )
     return sample, model, global_transform, seg_transforms
+
+
+def _landmark_map_from_props(props):
+    """Marker -> first MHR vertex index from the loaded links, or None if empty.
+
+    Feeds map-driven per-segment alignment so a model whose marker names differ from
+    the Pose2Sim vocabulary (e.g. the SKEL / bsm set) still aligns its head, hands,
+    pelvis and torso once its correspondence is loaded. None -> legacy behaviour.
+    """
+    out: dict[str, int] = {}
+    for item in props.links:
+        if not item.vertex_indices:
+            continue
+        first = item.vertex_indices.split(",")[0]
+        if first:
+            out[item.marker_name] = int(first)
+    return out or None
 
 
 def _vec_csv(vec) -> str:

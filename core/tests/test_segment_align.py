@@ -446,6 +446,43 @@ def test_long_bone_joint_axes_align_with_keypoint_axes_at_rest():
         assert angle < 6.0, f"{body} joint axis off by {angle:.1f} deg from keypoints"
 
 
+def test_landmark_map_fits_an_otherwise_identity_body():
+    # A body not covered by SEGMENT_TABLE / LANDMARK_SEGMENTS / INHERIT stays identity
+    # without a map, but a landmark_map providing >=3 of its markers fits it (Procrustes
+    # marker-world -> mapped skin vertex). This is the model-agnostic path used for the
+    # SKEL / bsm marker set, whose names are not in the Pose2Sim vocabulary.
+    local = {"M0": [0.0, 0.0, 0.0], "M1": [0.1, 0.0, 0.0], "M2": [0.0, 0.1, 0.0]}
+    markers = [OsimMarker(n, "B", v) for n, v in local.items()]  # "B" is in no table
+    model = _body_model("B", markers)  # world[B] = identity
+    verts = np.array([[0.0, 0.0, 0.0], [0.2, 0.0, 0.0], [0.0, 0.2, 0.0]])  # 2x scaled
+    sample = MhrSample(
+        verts=verts,
+        faces=np.zeros((1, 3), dtype=np.int32),
+        joint_coords=np.zeros((127, 3), dtype=np.float32),
+        keypoints=np.zeros((70, 3), dtype=np.float32),
+        frame_index=0,
+        coordinate_frame="estimator_camera_raw",
+        units="meters",
+        source="synthetic",
+    )
+    landmark_map = {"M0": 0, "M1": 1, "M2": 2}
+
+    without = compute_segment_transforms(sample, model, _identity_similarity())
+    withmap = compute_segment_transforms(
+        sample, model, _identity_similarity(), landmark_map=landmark_map
+    )
+
+    np.testing.assert_allclose(without["B"], np.eye(4), atol=1e-12)
+    assert not np.allclose(withmap["B"], np.eye(4))
+
+    # Each marker lands on its mapped vertex (global transform is identity).
+    marker_world = neutral_marker_world_positions(model)
+    matrix = withmap["B"]
+    for name, idx in landmark_map.items():
+        got = matrix[:3, :3] @ marker_world[name] + matrix[:3, 3]
+        np.testing.assert_allclose(got, verts[idx], atol=1e-6)
+
+
 def test_torso_anchors_are_all_skin_vertices():
     # All torso anchors must be skin vertices: they carry the scale block of the
     # extended basis, so the cloud scales coherently. Mixing in keypoints (whose scale
