@@ -107,17 +107,25 @@ def _to_contract_map(corr: CorrespondenceFile):
     )
 
 
-def validate_for_export(corr: CorrespondenceFile) -> None:
+def validate_for_export(
+    corr: CorrespondenceFile,
+    allowed_markers: set[str] | None = None,
+    allowed_bodies: set[str] | None = None,
+) -> None:
     """Validate before writing. Raises :class:`ValueError` on any problem.
 
-    Always runs the pure-Python vocabulary + structural checks (rejecting a marker
-    name or segment outside the vocabulary). Additionally validates against
-    ``mesh2sim.contracts.CorrespondenceMap`` when that package is importable (soft
-    dependency); otherwise that step is skipped.
+    Runs the pure-Python structural checks. Marker names / bodies are checked against
+    the Pose2Sim vocabulary by default, or against ``allowed_markers`` /
+    ``allowed_bodies`` (the loaded model) for a non-Pose2Sim model. The
+    ``mesh2sim.contracts.CorrespondenceMap`` check runs only for the Pose2Sim contract
+    case (no custom vocabulary given) and only when that package is importable.
     """
-    errors = validate(corr)
+    errors = validate(corr, allowed_markers, allowed_bodies)
     if errors:
         raise ValueError("invalid correspondence file: " + "; ".join(errors))
+
+    if allowed_markers is not None:
+        return  # custom (non-Pose2Sim) vocabulary -> not a shared-contract map
 
     try:
         import mesh2sim.contracts  # noqa: F401  (presence check)
@@ -142,8 +150,14 @@ def write_correspondence(
     opensim_model: str = MODEL_SLUG,
     marker_set: str = "mesh2marker",
     frame_alignment: FrameAlignment | None = None,
+    allowed_markers: set[str] | None = None,
+    allowed_bodies: set[str] | None = None,
 ) -> CorrespondenceFile:
-    """Build the schema object from links, validate it, then write it as JSON."""
+    """Build the schema object from links, validate it, then write it as JSON.
+
+    ``allowed_markers`` / ``allowed_bodies`` let a non-Pose2Sim model (e.g. SKEL) be
+    validated against its own markers instead of the Pose2Sim contract vocabulary.
+    """
     corr = links_to_correspondence(
         links,
         mhr_topology_id=mhr_topology_id,
@@ -151,7 +165,7 @@ def write_correspondence(
         marker_set=marker_set,
         frame_alignment=frame_alignment,
     )
-    validate_for_export(corr)
+    validate_for_export(corr, allowed_markers, allowed_bodies)
     write(corr, path)
     return corr
 

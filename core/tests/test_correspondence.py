@@ -109,6 +109,34 @@ def test_export_rejects_unknown_marker(tmp_path):
         write_correspondence(links, tmp_path / "x.json")
 
 
+def test_export_against_arbitrary_model_vocabulary(tmp_path):
+    # A non-Pose2Sim marker set (e.g. SKEL / bsm) is rejected by the contract vocab
+    # but accepted when validated against the given model's own markers/bodies.
+    links = [{"marker": "BLTI", "vertex_indices": [11970], "opensim_body": "tibia_l"}]
+    with pytest.raises(ValueError, match="unknown marker name"):
+        write_correspondence(links, tmp_path / "x.json")
+
+    corr = write_correspondence(
+        links,
+        tmp_path / "ok.json",
+        opensim_model="SKEL",
+        allowed_markers={"BLTI"},
+        allowed_bodies={"tibia_l"},
+    )
+    assert (tmp_path / "ok.json").is_file()
+    assert corr.opensim_model == "SKEL"
+
+    # A name outside the supplied vocabulary is still rejected.
+    with pytest.raises(ValueError, match="unknown marker name"):
+        write_correspondence(
+            [{"marker": "NOPE", "vertex_indices": [1], "opensim_body": "tibia_l"}],
+            tmp_path / "y.json",
+            opensim_model="SKEL",
+            allowed_markers={"BLTI"},
+            allowed_bodies={"tibia_l"},
+        )
+
+
 def test_export_rejects_unknown_body(tmp_path):
     links = [{"marker": "RASI", "vertex_indices": [1], "opensim_body": "NOT_A_BODY"}]
     with pytest.raises(ValueError, match="unknown opensim body"):

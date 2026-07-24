@@ -12,8 +12,19 @@ from .models import SCHEMA_VERSION, CorrespondenceFile
 from .vocabulary import LANDMARK_NAMES, SEGMENTS_BY_MODEL
 
 
-def validate(corr: CorrespondenceFile) -> list[str]:
-    """Return the list of validation errors for ``corr`` (empty if valid)."""
+def validate(
+    corr: CorrespondenceFile,
+    allowed_markers: set[str] | None = None,
+    allowed_bodies: set[str] | None = None,
+) -> list[str]:
+    """Return the list of validation errors for ``corr`` (empty if valid).
+
+    By default marker names are checked against the shared Pose2Sim vocabulary and
+    bodies against :data:`SEGMENTS_BY_MODEL`. For a model that is NOT Pose2Sim (e.g.
+    the SKEL / bsm marker set), pass ``allowed_markers`` / ``allowed_bodies`` taken
+    from the loaded model so the map is checked for internal consistency against that
+    model instead of the (irrelevant) Pose2Sim contract.
+    """
     errors: list[str] = []
 
     if corr.schema_version != SCHEMA_VERSION:
@@ -21,9 +32,13 @@ def validate(corr: CorrespondenceFile) -> list[str]:
             f"schema_version must be {SCHEMA_VERSION!r}, got {corr.schema_version!r}"
         )
 
-    bodies = SEGMENTS_BY_MODEL.get(corr.opensim_model)
-    if bodies is None:
-        errors.append(f"unknown opensim model: {corr.opensim_model!r}")
+    names = allowed_markers if allowed_markers is not None else LANDMARK_NAMES
+    if allowed_bodies is not None:
+        bodies: frozenset[str] | set[str] | None = allowed_bodies
+    else:
+        bodies = SEGMENTS_BY_MODEL.get(corr.opensim_model)
+        if bodies is None:
+            errors.append(f"unknown opensim model: {corr.opensim_model!r}")
 
     seen: set[str] = set()
     for m in corr.markers:
@@ -31,7 +46,7 @@ def validate(corr: CorrespondenceFile) -> list[str]:
             errors.append(f"duplicate marker name: {m.name!r}")
         seen.add(m.name)
 
-        if m.name not in LANDMARK_NAMES:
+        if m.name not in names:
             errors.append(f"unknown marker name: {m.name!r}")
 
         if bodies is not None and m.opensim_body not in bodies:

@@ -1383,15 +1383,28 @@ class MESH2MARKER_OT_export_correspondence(Operator):
             self.report({"WARNING"}, "No links to export")
             return {"CANCELLED"}
 
-        # Identity fields default to the canonical contract values (slug + mhr_v1).
-        # write_correspondence validates (vocabulary + CorrespondenceMap when
-        # mesh2sim.contracts is installed) and raises ValueError on any problem.
+        # A Pose2Sim map (all names in the shared vocabulary) is validated against the
+        # contract; any other model (e.g. SKEL / bsm) is validated against ITS OWN
+        # markers/bodies so its non-Pose2Sim names are not rejected.
+        from mesh2marker.vocabulary import LANDMARK_NAMES
+
+        is_contract = {link["marker"] for link in links} <= set(LANDMARK_NAMES)
         try:
-            write_correspondence(
-                links,
-                self.filepath,
-                frame_alignment=to_frame_alignment(global_transform),
-            )
+            if is_contract:
+                write_correspondence(
+                    links,
+                    self.filepath,
+                    frame_alignment=to_frame_alignment(global_transform),
+                )
+            else:
+                write_correspondence(
+                    links,
+                    self.filepath,
+                    opensim_model=model.name or "custom",
+                    frame_alignment=to_frame_alignment(global_transform),
+                    allowed_markers={m.name for m in model.markers},
+                    allowed_bodies={b.name for b in model.bodies},
+                )
         except (OSError, ValueError) as exc:
             self.report({"ERROR"}, f"Export rejected by validation: {exc}")
             return {"CANCELLED"}
