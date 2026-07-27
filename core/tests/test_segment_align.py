@@ -454,7 +454,12 @@ def test_landmark_map_fits_an_otherwise_identity_body():
     local = {"M0": [0.0, 0.0, 0.0], "M1": [0.1, 0.0, 0.0], "M2": [0.0, 0.1, 0.0]}
     markers = [OsimMarker(n, "B", v) for n, v in local.items()]  # "B" is in no table
     model = _body_model("B", markers)  # world[B] = identity
-    verts = np.array([[0.0, 0.0, 0.0], [0.2, 0.0, 0.0], [0.0, 0.2, 0.0]])  # 2x scaled
+    # RIGID target (rotation + translation, NO scale): the map-driven fit takes its
+    # scale from the bone (global scale = 1 here, identity), so a rigid target lands
+    # exactly. A scaled target would NOT -- by design, fat must not scale the bone.
+    rot = euler_xyz_to_matrix([0.2, -0.1, 0.3])
+    trans = np.array([0.4, -0.2, 0.5])
+    verts = np.array([rot @ np.array(v) + trans for v in local.values()])
     sample = MhrSample(
         verts=verts,
         faces=np.zeros((1, 3), dtype=np.int32),

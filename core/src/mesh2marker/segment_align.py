@@ -294,14 +294,25 @@ def compute_segment_transforms(
                 continue
             grouped.setdefault(body, []).append((marker_world[marker_name], target))
 
+        # Scale of a map-fit body comes from the BONE (the global keypoint->joint
+        # similarity), NOT from the fitted skin markers. Otherwise obesity -- which
+        # widens the skin but not the skeleton -- would inflate the segment's scale
+        # (e.g. pelvis 1.3 -> 1.86) and get absorbed there instead of pushing the
+        # markers outward. With the bone scale fixed, fat morphs leave the bone size
+        # alone and the markers move out onto the skin (the deterministic 5c vision);
+        # genuine size changes still scale because the joints (hence global scale)
+        # move. Rotation + translation still come from the landmark fit.
+        bone_scale = float(global_transform.scale)
+
         def _fit_pairs(pairs: list[tuple[np.ndarray, np.ndarray]]) -> np.ndarray:
-            return similarity_to_matrix(
-                procrustes_align(
-                    np.asarray([s for s, _ in pairs], dtype=float),
-                    np.asarray([t for _, t in pairs], dtype=float),
-                    with_scale=True,
-                )
-            )
+            src = np.asarray([s for s, _ in pairs], dtype=float)
+            tgt = np.asarray([t for _, t in pairs], dtype=float)
+            fitted = similarity_to_matrix(procrustes_align(src, tgt, with_scale=True))
+            rot = fitted[:3, :3] / np.linalg.norm(fitted[:3, :3], axis=0).mean()
+            out = np.eye(4)
+            out[:3, :3] = bone_scale * rot
+            out[:3, 3] = tgt.mean(axis=0) - bone_scale * (rot @ src.mean(axis=0))
+            return out
 
         map_pairs: dict[str, list[tuple[np.ndarray, np.ndarray]]] = {}
         for body, pairs in grouped.items():
