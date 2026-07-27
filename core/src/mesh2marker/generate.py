@@ -39,11 +39,22 @@ def generate_subject_osim(
     per-segment transforms, and for every mapped marker present in the model with at
     least one vertex index, takes the centroid vertex and inverts the segment world
     matrix to get the new segment-local location. Returns the written locations.
+
+    The correspondence also drives the per-segment alignment (``landmark_map``), so a
+    model whose marker names differ from the Pose2Sim vocabulary (e.g. SKEL) gets its
+    head/hands/pelvis/torso aligned from its own map -- matching the Blender add-on.
     """
     index_map = _as_index_map(correspondence)
     model = parse_osim(src_osim_path)
     global_transform, _, _ = align_mhr_to_opensim(sample, model)
-    seg_transforms = compute_segment_transforms(sample, model, global_transform)
+    landmark_map = {
+        name: centroid_vertex(sample.verts, list(indices))
+        for name, indices in index_map.items()
+        if indices
+    }
+    seg_transforms = compute_segment_transforms(
+        sample, model, global_transform, landmark_map=landmark_map
+    )
 
     model_markers = {m.name for m in model.markers}
     locations: dict[str, tuple[float, float, float]] = {}

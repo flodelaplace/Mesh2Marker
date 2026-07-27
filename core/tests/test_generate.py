@@ -101,10 +101,15 @@ def test_generate_subject_osim(tmp_path):
 
     assert set(locations) == {"MK1", "MK2"}
 
-    # The written locations match a direct recomputation (same chain).
+    # The written locations match a direct recomputation (same chain, same map).
     model = parse_osim(src)
     gt, _, _ = align_mhr_to_opensim(sample, model)
-    seg = compute_segment_transforms(sample, model, gt)
+    landmark_map = {
+        n: centroid_vertex(sample.verts, list(idx))
+        for n, idx in correspondence.items()
+        if idx
+    }
+    seg = compute_segment_transforms(sample, model, gt, landmark_map=landmark_map)
     for name, indices in correspondence.items():
         idx = centroid_vertex(sample.verts, indices)
         expected = reposition_marker_to_vertex(model, name, sample.verts, idx, gt, seg)

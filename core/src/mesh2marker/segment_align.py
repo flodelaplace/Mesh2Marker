@@ -313,6 +313,10 @@ def compute_segment_transforms(
         # well-placed child pulls the parent's junction into place. Concretely the
         # head (fit on its own markers) pulls the torso's neck end forward, so the
         # cervical spine -- rigidly part of the torso -- stops protruding backward.
+        # NB: deliberately only map-fit children. The long bones are fit from the rig
+        # joints, whose shoulder AP centre reads posterior of the shoulder mass (~39%
+        # vs ~51%), so sewing the torso onto them would pull the well-placed glenoid
+        # backward. The limb-head placement is governed by the rig joint upstream.
         parent_joint = {jt.child_body: (jt.parent_body, jt.name) for jt in model.joints}
         junctions: dict[str, list[tuple[np.ndarray, np.ndarray]]] = {}
         for child in map_pairs:
