@@ -21,6 +21,8 @@ from mesh2marker.segment_align import (
     INHERIT,
     LANDMARK_SEGMENTS,
     SEGMENT_TABLE,
+    _roll_matrix_about_axis,
+    _rotation_about_axis,
     compute_segment_transforms,
     minimal_rotation,
 )
@@ -665,3 +667,43 @@ def test_long_bone_lengths_are_plausible_and_symmetric_at_rest():
     # The MHR template is symmetric: left/right rest lengths match to < 1 mm.
     for right, left in _LR_PAIRS:
         assert abs(lengths[right] - lengths[left]) < 1e-3
+
+
+def test_rotation_about_axis_rotates_in_plane():
+    # 90 deg about +Z sends +X -> +Y; the axis direction itself is fixed.
+    r = _rotation_about_axis(np.array([0.0, 0.0, 1.0]), np.pi / 2)
+    np.testing.assert_allclose(r @ [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], atol=1e-12)
+    np.testing.assert_allclose(r @ [0.0, 0.0, 3.0], [0.0, 0.0, 3.0], atol=1e-12)
+    # It is a proper rotation.
+    np.testing.assert_allclose(np.linalg.det(r), 1.0, atol=1e-12)
+    # Axis need not be pre-normalized.
+    r2 = _rotation_about_axis(np.array([0.0, 0.0, 5.0]), np.pi / 2)
+    np.testing.assert_allclose(r2, r, atol=1e-12)
+
+
+def test_roll_matrix_aligns_transverse_and_fixes_the_axis_line():
+    # Roll a bone (identity placement) about +Z so its transverse +X meets target +Y.
+    axis = np.array([0.0, 0.0, 1.0])
+    pivot = np.array([0.0, 0.0, 0.0])
+    rolled = _roll_matrix_about_axis(
+        np.eye(4), pivot, axis, u_dir=np.array([1.0, 0.0, 0.0]),
+        v_dir=np.array([0.0, 2.0, 0.0]),
+    )
+    # The transverse direction now points along +Y (magnitude is not constrained).
+    moved = rolled[:3, :3] @ [1.0, 0.0, 0.0]
+    moved /= np.linalg.norm(moved)
+    np.testing.assert_allclose(moved, [0.0, 1.0, 0.0], atol=1e-12)
+    # Points on the axis line through the pivot are untouched (both bone ends stay put).
+    for p in ([0.0, 0.0, 0.0], [0.0, 0.0, 0.42], [0.0, 0.0, -0.17]):
+        q = rolled[:3, :3] @ p + rolled[:3, 3]
+        np.testing.assert_allclose(q, p, atol=1e-12)
+
+
+def test_roll_only_uses_the_component_perpendicular_to_the_axis():
+    # A target that is purely along the axis carries no roll information -> no change.
+    axis = np.array([0.0, 0.0, 1.0])
+    unchanged = _roll_matrix_about_axis(
+        np.eye(4), np.zeros(3), axis, u_dir=np.array([1.0, 0.0, 0.0]),
+        v_dir=np.array([0.0, 0.0, 1.0]),
+    )
+    np.testing.assert_allclose(unchanged, np.eye(4), atol=1e-12)

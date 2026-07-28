@@ -58,6 +58,23 @@ SEGMENT_TABLE: dict[str, tuple[str, str, int, int]] = {
     "radius_l": ("elbow_l", "radius_hand_l", 76, 77),
 }
 
+# Forearm bones: the elbow->wrist axis fit fixes the axis but leaves the roll about
+# it (pronation/supination) undetermined -- inherited from the neutral OpenSim pose,
+# so the wrist and hand can arrive rotated (~90 deg) versus the MHR, throwing off the
+# wrist (RWRA/RWRB) and forearm technical (RFRM/LFRM) markers. When the correspondence
+# map provides the two wrist markers, their medial-lateral direction (A = radial
+# styloid, B = ulnar styloid) recovers the missing roll: rotate the forearm about its
+# own long axis so the OpenSim A->B direction matches the MHR mapped vertices'
+# direction. Elbow and bone length are untouched (both joints lie on the axis line).
+# ulna and radius share the elbow->wrist fit, so the pair is rigid under it and one
+# roll is exact for both. Map-driven only -> the validated Pose2Sim path is untouched.
+FOREARM_ROLL_REFERENCE: dict[str, tuple[str, str]] = {
+    "ulna_r": ("RWRA", "RWRB"),
+    "radius_r": ("RWRA", "RWRB"),
+    "ulna_l": ("LWRA", "LWRB"),
+    "radius_l": ("LWRA", "LWRB"),
+}
+
 # body -> ancestor body whose correction it inherits.
 INHERIT: dict[str, str] = {
     "patella_r": "femur_r",
@@ -132,6 +149,11 @@ LANDMARK_SEGMENTS: dict[str, list[tuple[str, int, str]]] = {
 # Procrustes needs at least 3 non-degenerate correspondences.
 LANDMARK_MIN_PAIRS = 3
 
+# Anterior (world +X) shift applied to a map-fit head so the skull's occipital mesh,
+# which extends behind the back-of-head markers, seats inside the MHR head. Tunable;
+# ~2 cm tucks the occiput while the facial mesh (with anterior slack) stays inside.
+HEAD_ANTERIOR_NUDGE_M = 0.02
+
 
 def minimal_rotation(a: np.ndarray, b: np.ndarray) -> np.ndarray:
     """Minimal proper rotation (det +1) sending unit vector ``a`` onto ``b``.
@@ -169,6 +191,53 @@ def _perpendicular(a: np.ndarray) -> np.ndarray:
     other = np.array([1.0, 0.0, 0.0]) if abs(a[0]) < 0.9 else np.array([0.0, 1.0, 0.0])
     axis = np.cross(a, other)
     return axis / np.linalg.norm(axis)
+
+
+def _rotation_about_axis(axis: np.ndarray, theta: float) -> np.ndarray:
+    """Rodrigues rotation (3x3) of angle ``theta`` about unit-normalized ``axis``."""
+    axis = np.asarray(axis, dtype=float)
+    axis = axis / np.linalg.norm(axis)
+    k = np.array(
+        [
+            [0.0, -axis[2], axis[1]],
+            [axis[2], 0.0, -axis[0]],
+            [-axis[1], axis[0], 0.0],
+        ]
+    )
+    return np.eye(3) + np.sin(theta) * k + (1.0 - np.cos(theta)) * (k @ k)
+
+
+def _roll_matrix_about_axis(
+    matrix: np.ndarray,
+    pivot: np.ndarray,
+    axis: np.ndarray,
+    u_dir: np.ndarray,
+    v_dir: np.ndarray,
+) -> np.ndarray:
+    """``matrix`` rolled about ``axis`` (via ``pivot``) sending ``u_dir`` to ``v_dir``.
+
+    The extra rotation is about the bone's long ``axis`` and pivots on ``pivot`` (the
+    proximal joint), so both joint centres -- which lie on the axis line -- stay fixed;
+    only the roll (pronation) changes. ``u_dir`` is the bone's current transverse
+    direction (after the axis fit), ``v_dir`` the target (MHR). Both are projected onto
+    the plane perpendicular to ``axis`` before the signed angle is taken. Returns
+    ``matrix`` unchanged if either transverse direction is degenerate (near-parallel to
+    the axis).
+    """
+    axis = np.asarray(axis, dtype=float)
+    axis = axis / np.linalg.norm(axis)
+    u_perp = np.asarray(u_dir, dtype=float) - np.dot(u_dir, axis) * axis
+    v_perp = np.asarray(v_dir, dtype=float) - np.dot(v_dir, axis) * axis
+    if np.linalg.norm(u_perp) < 1e-6 or np.linalg.norm(v_perp) < 1e-6:
+        return matrix
+    theta = float(
+        np.arctan2(np.dot(axis, np.cross(u_perp, v_perp)), np.dot(u_perp, v_perp))
+    )
+    roll = _rotation_about_axis(axis, theta)
+    out = np.eye(4)
+    out[:3, :3] = roll @ matrix[:3, :3]
+    out[:3, 3] = roll @ (matrix[:3, 3] - pivot) + pivot
+    return out
 
 
 def _long_bone_matrix(
@@ -239,25 +308,47 @@ def compute_segment_transforms(
         return np.asarray(global_transform.apply(point), dtype=float)
 
     transforms: dict[str, np.ndarray] = {}
+    marker_world = neutral_marker_world_positions(model)
 
     for body, (joint_p, joint_d, mhr_p, mhr_d) in SEGMENT_TABLE.items():
         if joint_p not in centers or joint_d not in centers:
             continue
         if not (0 <= mhr_p < n_joints and 0 <= mhr_d < n_joints):
             continue
+        t_p = joint_world(mhr_p)
+        t_d = joint_world(mhr_d)
         matrix = _long_bone_matrix(
             np.asarray(centers[joint_p], dtype=float),
             np.asarray(centers[joint_d], dtype=float),
-            joint_world(mhr_p),
-            joint_world(mhr_d),
+            t_p,
+            t_d,
         )
-        if matrix is not None:
-            transforms[body] = matrix
+        if matrix is None:
+            continue
+        # Recover the forearm roll from the mapped wrist markers (see
+        # FOREARM_ROLL_REFERENCE): the axis fit above leaves it undetermined.
+        ref = FOREARM_ROLL_REFERENCE.get(body)
+        if landmark_map and ref is not None:
+            mk_a, mk_b = ref
+            v_a = landmark_map.get(mk_a)
+            v_b = landmark_map.get(mk_b)
+            if (
+                v_a is not None
+                and v_b is not None
+                and mk_a in marker_world
+                and mk_b in marker_world
+            ):
+                tgt_a = mhr_world("vertex", int(v_a))
+                tgt_b = mhr_world("vertex", int(v_b))
+                if tgt_a is not None and tgt_b is not None:
+                    u_dir = matrix[:3, :3] @ (marker_world[mk_b] - marker_world[mk_a])
+                    matrix = _roll_matrix_about_axis(
+                        matrix, t_p, t_d - t_p, u_dir, tgt_b - tgt_a
+                    )
+        transforms[body] = matrix
 
     # Full Procrustes on landmark pairs for extremities (head, hands) and volumetric
     # segments (pelvis, torso). These override any inherited/identity value.
-    marker_world = neutral_marker_world_positions(model)
-
     for body, pairs in LANDMARK_SEGMENTS.items():
         source: list[np.ndarray] = []
         target: list[np.ndarray] = []
@@ -319,6 +410,16 @@ def compute_segment_transforms(
             if len(pairs) >= LANDMARK_MIN_PAIRS:
                 map_pairs[body] = pairs
                 transforms[body] = _fit_pairs(pairs)
+
+        # A map-fit head sits perfectly by its markers (front/back/top all on the
+        # skin), but the skull MESH extends posterior to its back-of-head markers
+        # (LBHD/RBHD), so the occiput pokes out behind the MHR head. The facial mesh
+        # has anterior slack (skin sits ahead of the facial bone), so nudging the
+        # head bone anteriorly (world +X) seats the occiput inside without the face
+        # poking through. Exported markers are unaffected (re-derived from the vertex);
+        # only the head-bone frame shifts. Map-driven only -> Pose2Sim head untouched.
+        if "head" in map_pairs:
+            transforms["head"][0, 3] += HEAD_ANTERIOR_NUDGE_M
 
         # Sew each map-fit body to its map-fit parent at their shared joint: a
         # well-placed child pulls the parent's junction into place. Concretely the
