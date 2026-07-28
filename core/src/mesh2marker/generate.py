@@ -17,7 +17,7 @@ from .linking import centroid_vertex, reposition_marker_to_vertex
 from .mhr import MhrSample
 from .morph import ShapeBasis, morph
 from .osim import parse_osim, write_osim_with_markers
-from .segment_align import compute_segment_transforms
+from .segment_align import ELBOW_ROLL_EXEMPT_MARKERS, compute_segment_transforms
 
 
 def _as_index_map(correspondence) -> dict[str, list[int]]:
@@ -43,6 +43,10 @@ def generate_subject_osim(
     The correspondence also drives the per-segment alignment (``landmark_map``), so a
     model whose marker names differ from the Pose2Sim vocabulary (e.g. SKEL) gets its
     head/hands/pelvis/torso aligned from its own map -- matching the Blender add-on.
+
+    Elbow markers (``ELBOW_ROLL_EXEMPT_MARKERS``) are placed from the forearm's PRE-roll
+    frame: they mark the humeral epicondyle, which does not pronate, so they must not
+    ride the forearm roll that orients the wrist/hand.
     """
     index_map = _as_index_map(correspondence)
     model = parse_osim(src_osim_path)
@@ -55,6 +59,9 @@ def generate_subject_osim(
     seg_transforms = compute_segment_transforms(
         sample, model, global_transform, landmark_map=landmark_map
     )
+    # Lazily built only if an elbow-exempt marker is actually present: the same
+    # transforms but with the forearm roll disabled, so epicondyle markers stay put.
+    seg_no_roll: dict | None = None
 
     model_markers = {m.name for m in model.markers}
     locations: dict[str, tuple[float, float, float]] = {}
@@ -62,8 +69,16 @@ def generate_subject_osim(
         if not indices or marker_name not in model_markers:
             continue
         idx = centroid_vertex(sample.verts, list(indices))
+        seg = seg_transforms
+        if marker_name in ELBOW_ROLL_EXEMPT_MARKERS:
+            if seg_no_roll is None:
+                seg_no_roll = compute_segment_transforms(
+                    sample, model, global_transform,
+                    landmark_map=landmark_map, apply_forearm_roll=False,
+                )
+            seg = seg_no_roll
         local = reposition_marker_to_vertex(
-            model, marker_name, sample.verts, idx, global_transform, seg_transforms
+            model, marker_name, sample.verts, idx, global_transform, seg
         )
         locations[marker_name] = (float(local[0]), float(local[1]), float(local[2]))
 

@@ -75,6 +75,12 @@ FOREARM_ROLL_REFERENCE: dict[str, tuple[str, str]] = {
     "radius_l": ("LWRA", "LWRB"),
 }
 
+# Markers on the forearm that mark the (humeral) epicondyle at the elbow. The
+# epicondyle does not pronate, so these must NOT ride the forearm roll -- they are
+# repositioned from the forearm's PRE-roll frame (compute_segment_transforms with
+# apply_forearm_roll=False). Without this they swing several cm about the long axis.
+ELBOW_ROLL_EXEMPT_MARKERS: frozenset[str] = frozenset({"RELB", "LELB"})
+
 # body -> ancestor body whose correction it inherits.
 INHERIT: dict[str, str] = {
     "patella_r": "femur_r",
@@ -263,6 +269,7 @@ def compute_segment_transforms(
     model: OsimModel,
     global_transform: SimilarityTransform | None = None,
     landmark_map: dict[str, int] | None = None,
+    apply_forearm_roll: bool = True,
 ) -> dict[str, np.ndarray]:
     """One per-body similarity correction (4x4, OpenSim world frame) for every body.
 
@@ -328,7 +335,7 @@ def compute_segment_transforms(
         # Recover the forearm roll from the mapped wrist markers (see
         # FOREARM_ROLL_REFERENCE): the axis fit above leaves it undetermined.
         ref = FOREARM_ROLL_REFERENCE.get(body)
-        if landmark_map and ref is not None:
+        if landmark_map and ref is not None and apply_forearm_roll:
             mk_a, mk_b = ref
             v_a = landmark_map.get(mk_a)
             v_b = landmark_map.get(mk_b)

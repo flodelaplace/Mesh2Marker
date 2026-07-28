@@ -214,3 +214,87 @@ def test_cli_batch_with_betas_csv(tmp_path):
     assert rc == 0
     assert (out_dir / "subjA.osim").is_file()
     assert (out_dir / "subjB.osim").is_file()
+
+
+# JOINTS + a forearm (elbow_r -> radius_hand_r) so the roll engages and RELB is exempt.
+_FOREARM_JOINTS = [
+    ("elbow_r", "ulna_r", (0.1, 1.4, 0.18)),
+    ("radius_hand_r", "hand_r", (0.1, 1.0, 0.18)),
+]
+
+
+def _write_osim_with_forearm(path) -> None:
+    doc = ET.Element("OpenSimDocument", Version="40000")
+    model = ET.SubElement(doc, "Model", name="fa")
+    body_objs = ET.SubElement(ET.SubElement(model, "BodySet"), "objects")
+    for _, child_body, _ in (*JOINTS, *_FOREARM_JOINTS):
+        ET.SubElement(body_objs, "Body", name=child_body)
+    joint_objs = ET.SubElement(ET.SubElement(model, "JointSet"), "objects")
+    for jname, child_body, centre in (*JOINTS, *_FOREARM_JOINTS):
+        joint = ET.SubElement(joint_objs, "CustomJoint", name=jname)
+        ET.SubElement(joint, "socket_parent_frame").text = f"{jname}_g"
+        ET.SubElement(joint, "socket_child_frame").text = f"{jname}_c"
+        frames = ET.SubElement(joint, "frames")
+        pof_g = ET.SubElement(frames, "PhysicalOffsetFrame", name=f"{jname}_g")
+        ET.SubElement(pof_g, "socket_parent").text = "/ground"
+        cx, cy, cz = centre
+        ET.SubElement(pof_g, "translation").text = f"{cx} {cy} {cz}"
+        ET.SubElement(pof_g, "orientation").text = "0 0 0"
+        pof_c = ET.SubElement(frames, "PhysicalOffsetFrame", name=f"{jname}_c")
+        ET.SubElement(pof_c, "socket_parent").text = f"/bodyset/{child_body}"
+        ET.SubElement(pof_c, "translation").text = "0 0 0"
+        ET.SubElement(pof_c, "orientation").text = "0 0 0"
+    marker_objs = ET.SubElement(ET.SubElement(model, "MarkerSet"), "objects")
+    for name, loc in (
+        ("RELB", (0.0, 0.0, 0.05)),
+        ("RWRA", (0.0, -0.4, 0.05)),
+        ("RWRB", (0.0, -0.4, -0.05)),
+    ):
+        marker = ET.SubElement(marker_objs, "Marker", name=name)
+        ET.SubElement(marker, "socket_parent_frame").text = "/bodyset/ulna_r"
+        ET.SubElement(marker, "location").text = f"{loc[0]} {loc[1]} {loc[2]}"
+    ET.ElementTree(doc).write(path, encoding="UTF-8", xml_declaration=True)
+
+
+def _make_forearm_sample() -> MhrSample:
+    sample = _make_sample(n_verts=20, seed=3)
+    sample.joint_coords[40] = [0.1, 1.4, 0.18]
+    sample.joint_coords[41] = [0.1, 1.0, 0.18]
+    return sample
+
+
+def test_generate_exempts_elbow_markers_from_forearm_roll(tmp_path):
+    src = str(tmp_path / "fa.osim")
+    dst = str(tmp_path / "out.osim")
+    _write_osim_with_forearm(src)
+    sample = _make_forearm_sample()
+    corr = {"RELB": [0], "RWRA": [1], "RWRB": [2]}
+
+    locations = generate_subject_osim(src, dst, corr, sample)
+
+    model = parse_osim(src)
+    gt, _, _ = align_mhr_to_opensim(sample, model)
+    lm = {n: centroid_vertex(sample.verts, i) for n, i in corr.items()}
+    seg = compute_segment_transforms(sample, model, gt, landmark_map=lm)
+    seg_nr = compute_segment_transforms(
+        sample, model, gt, landmark_map=lm, apply_forearm_roll=False
+    )
+
+    # The elbow marker is placed from the PRE-roll forearm frame ...
+    exp_elbow = reposition_marker_to_vertex(
+        model, "RELB", sample.verts, centroid_vertex(sample.verts, [0]), gt, seg_nr
+    )
+    np.testing.assert_allclose(locations["RELB"], exp_elbow, atol=1e-6)
+    # ... the wrist marker from the rolled frame.
+    exp_wrist = reposition_marker_to_vertex(
+        model, "RWRA", sample.verts, centroid_vertex(sample.verts, [1]), gt, seg
+    )
+    np.testing.assert_allclose(locations["RWRA"], exp_wrist, atol=1e-6)
+
+    # Guard: the roll is actually non-trivial here, so the exemption matters (the elbow
+    # would have landed elsewhere had it ridden the roll).
+    assert not np.allclose(seg["ulna_r"], seg_nr["ulna_r"], atol=1e-6)
+    roll_elbow = reposition_marker_to_vertex(
+        model, "RELB", sample.verts, centroid_vertex(sample.verts, [0]), gt, seg
+    )
+    assert not np.allclose(locations["RELB"], roll_elbow, atol=1e-4)

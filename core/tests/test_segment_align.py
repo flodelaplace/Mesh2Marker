@@ -707,3 +707,63 @@ def test_roll_only_uses_the_component_perpendicular_to_the_axis():
         v_dir=np.array([0.0, 0.0, 1.0]),
     )
     np.testing.assert_allclose(unchanged, np.eye(4), atol=1e-12)
+
+
+def _forearm_model() -> OsimModel:
+    # ulna_r hangs off ground at the elbow; radius_hand_r gives the distal (wrist)
+    # centre. Elbow/wrist markers sit lateral to the long axis (offset in Z).
+    bodies = [OsimBody(n, []) for n in ("ulna_r", "hand_r")]
+    joints = [
+        _joint("elbow_r", "ground", "ulna_r", [0.1, 1.4, 0.2]),
+        _joint("radius_hand_r", "ground", "hand_r", [0.1, 1.0, 0.2]),
+    ]
+    markers = [
+        OsimMarker("RELB", "ulna_r", [0.0, 0.0, 0.1]),   # world (0.1, 1.4, 0.3)
+        OsimMarker("RWRA", "ulna_r", [0.0, -0.4, 0.1]),  # world (0.1, 1.0, 0.3)
+        OsimMarker("RWRB", "ulna_r", [0.0, -0.4, -0.1]), # world (0.1, 1.0, 0.1)
+    ]
+    return OsimModel(name="fa", bodies=bodies, joints=joints, markers=markers)
+
+
+def _forearm_sample() -> MhrSample:
+    joint_coords = np.zeros((127, 3), dtype=np.float32)
+    joint_coords[40] = [0.1, 1.4, 0.2]  # rig elbow
+    joint_coords[41] = [0.1, 1.0, 0.2]  # rig wrist
+    verts = np.zeros((3, 3), dtype=np.float32)
+    verts[1] = [0.2, 1.0, 0.2]  # RWRA target vertex  -> transverse along -X ...
+    verts[2] = [0.0, 1.0, 0.2]  # RWRB target vertex
+    return MhrSample(
+        verts=verts,
+        faces=np.zeros((1, 3), dtype=np.int32),
+        joint_coords=joint_coords,
+        keypoints=np.zeros((70, 3), dtype=np.float32),
+        frame_index=0,
+        coordinate_frame="estimator_camera_raw",
+        units="meters",
+        source="synthetic",
+    )
+
+
+def test_apply_forearm_roll_toggle_rolls_only_when_enabled():
+    model = _forearm_model()
+    sample = _forearm_sample()
+    lm = {"RWRA": 1, "RWRB": 2}  # marker -> MHR vertex index
+
+    rolled = compute_segment_transforms(
+        sample, model, global_transform=_identity_similarity(), landmark_map=lm
+    )
+    straight = compute_segment_transforms(
+        sample, model, global_transform=_identity_similarity(),
+        landmark_map=lm, apply_forearm_roll=False,
+    )
+
+    # Rig elbow/wrist coincide with the OpenSim joint centres, so the pure axis fit is
+    # the identity; disabling the roll must leave ulna_r at that identity ...
+    np.testing.assert_allclose(straight["ulna_r"], np.eye(4), atol=1e-6)
+    # ... while enabling it rolls the bone about its long axis (target transverse
+    # direction differs from the neutral one), so ulna_r is no longer the identity.
+    assert not np.allclose(rolled["ulna_r"], np.eye(4), atol=1e-6)
+    # A roll is a pure rotation: it preserves the joint centres on the axis line.
+    for jc in ([0.1, 1.4, 0.2], [0.1, 1.0, 0.2]):
+        p = rolled["ulna_r"][:3, :3] @ jc + rolled["ulna_r"][:3, 3]
+        np.testing.assert_allclose(p, jc, atol=1e-6)
