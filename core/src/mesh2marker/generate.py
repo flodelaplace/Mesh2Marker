@@ -12,12 +12,29 @@ segment transform giving the new segment-local marker position.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from .alignment import align_mhr_to_opensim
 from .linking import centroid_vertex, reposition_marker_to_vertex
 from .mhr import MhrSample
 from .morph import ShapeBasis, morph
 from .osim import parse_osim, write_osim_with_markers
 from .segment_align import ELBOW_ROLL_EXEMPT_MARKERS, compute_segment_transforms
+from .segment_scale import segment_scales_from_joints
+
+
+@dataclass
+class SubjectOsim:
+    """Result of :func:`generate_subject_osim` when skeleton scales are requested.
+
+    ``marker_locations`` is the same mapping returned by default (marker name ->
+    segment-local location). ``segment_scales`` maps every OpenSim body name to an
+    isotropic ``(sx, sy, sz)`` skeletal scale factor (1.0 = unscaled), ready for an
+    OpenSim ScaleSet -- see :mod:`mesh2marker.segment_scale`.
+    """
+
+    marker_locations: dict[str, tuple[float, float, float]]
+    segment_scales: dict[str, tuple[float, float, float]]
 
 
 def _as_index_map(correspondence) -> dict[str, list[int]]:
@@ -32,13 +49,15 @@ def generate_subject_osim(
     dst_osim_path,
     correspondence,
     sample: MhrSample,
-) -> dict[str, tuple[float, float, float]]:
+    *,
+    shape_basis: ShapeBasis | None = None,
+):
     """Write ``dst`` = ``src`` with mapped markers moved onto ``sample``'s skin.
 
     Pure function: parses the source model, aligns the sample to it, computes the
     per-segment transforms, and for every mapped marker present in the model with at
     least one vertex index, takes the centroid vertex and inverts the segment world
-    matrix to get the new segment-local location. Returns the written locations.
+    matrix to get the new segment-local location.
 
     The correspondence also drives the per-segment alignment (``landmark_map``), so a
     model whose marker names differ from the Pose2Sim vocabulary (e.g. SKEL) gets its
@@ -47,6 +66,15 @@ def generate_subject_osim(
     Elbow markers (``ELBOW_ROLL_EXEMPT_MARKERS``) are placed from the forearm's PRE-roll
     frame: they mark the humeral epicondyle, which does not pronate, so they must not
     ride the forearm roll that orients the wrist/hand.
+
+    Return value (opt-in, backward compatible):
+
+    - ``shape_basis`` omitted (default) -> returns the ``{marker: location}`` dict, as
+      before. The written ``.osim`` keeps the source skeleton (bones NOT scaled).
+    - ``shape_basis`` given -> returns a :class:`SubjectOsim` carrying both the marker
+      locations AND ``segment_scales`` (every model body -> isotropic ``(sx, sy, sz)``,
+      1.0 = unscaled) read from the subject's rig joints. The scales are for an OpenSim
+      ScaleSet downstream; this function still does not scale the ``.osim`` itself.
     """
     index_map = _as_index_map(correspondence)
     model = parse_osim(src_osim_path)
@@ -83,7 +111,12 @@ def generate_subject_osim(
         locations[marker_name] = (float(local[0]), float(local[1]), float(local[2]))
 
     write_osim_with_markers(src_osim_path, dst_osim_path, locations)
-    return locations
+    if shape_basis is None:
+        return locations
+    segment_scales = segment_scales_from_joints(
+        shape_basis.j0, sample.joint_coords, bodies=[b.name for b in model.bodies]
+    )
+    return SubjectOsim(marker_locations=locations, segment_scales=segment_scales)
 
 
 def sample_from_betas(basis: ShapeBasis, betas) -> MhrSample:

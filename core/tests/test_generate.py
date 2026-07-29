@@ -298,3 +298,58 @@ def test_generate_exempts_elbow_markers_from_forearm_roll(tmp_path):
         model, "RELB", sample.verts, centroid_vertex(sample.verts, [0]), gt, seg
     )
     assert not np.allclose(locations["RELB"], roll_elbow, atol=1e-4)
+
+
+def _synth_basis_127(seed=5):
+    """73-component basis with 127 rig joints; scale block [45:73] moves the joints."""
+    from mesh2marker.morph import ShapeBasis
+
+    rng = np.random.default_rng(seed)
+    nj, nv, nk, ns = 127, 50, 70, 73
+    dj = np.zeros((ns, nj, 3))
+    dj[45:] = rng.normal(size=(28, nj, 3)) * 0.1
+    return ShapeBasis(
+        v0=rng.normal(size=(nv, 3)),
+        j0=rng.normal(size=(nj, 3)) + 2.0,
+        kp0=rng.normal(size=(nk, 3)),
+        faces=np.array([[0, 1, 2]], dtype=np.int32),
+        dv=rng.normal(size=(ns, nv, 3)),
+        dj=dj,
+        dkp=np.zeros((ns, nk, 3)),
+        delta=0.1,
+        meta={},
+    )
+
+
+def test_generate_returns_segment_scales_when_shape_basis_given(tmp_path):
+    from mesh2marker.generate import SubjectOsim
+    from mesh2marker.morph import morph
+
+    src = str(tmp_path / "src.osim")
+    dst = str(tmp_path / "out.osim")
+    _write_synthetic_osim(src, markers=TWO_MARKERS)
+    basis = _synth_basis_127()
+    corr = {"MK1": [3], "MK2": [7, 8]}
+
+    # Default (no shape_basis): the plain {marker: location} dict, unchanged.
+    loc = generate_subject_osim(src, dst, corr, morph(basis, np.zeros(73)))
+    assert isinstance(loc, dict)
+
+    # Opt-in: SubjectOsim carrying the same markers + a complete scale dict.
+    res = generate_subject_osim(
+        src, dst, corr, morph(basis, np.zeros(73)), shape_basis=basis
+    )
+    assert isinstance(res, SubjectOsim)
+    assert res.marker_locations == loc  # markers identical to the default path
+    model_bodies = {b.name for b in parse_osim(src).bodies}
+    assert set(res.segment_scales) == model_bodies  # every body present, none dropped
+    for body, s in res.segment_scales.items():  # betas=0 -> all unscaled
+        np.testing.assert_allclose(s, (1.0, 1.0, 1.0), atol=1e-9, err_msg=body)
+
+    # A scale morph drives the bones through the subject rig joints.
+    betas = np.zeros(73)
+    betas[48] = 2.0
+    scaled = generate_subject_osim(
+        src, dst, corr, morph(basis, betas), shape_basis=basis
+    )
+    assert not np.allclose(scaled.segment_scales["femur_r"], (1.0, 1.0, 1.0))
