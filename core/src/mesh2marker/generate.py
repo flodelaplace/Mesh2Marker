@@ -51,6 +51,7 @@ def generate_subject_osim(
     sample: MhrSample,
     *,
     shape_basis: ShapeBasis | None = None,
+    alignment_markers=None,
 ):
     """Write ``dst`` = ``src`` with mapped markers moved onto ``sample``'s skin.
 
@@ -62,6 +63,14 @@ def generate_subject_osim(
     The correspondence also drives the per-segment alignment (``landmark_map``), so a
     model whose marker names differ from the Pose2Sim vocabulary (e.g. SKEL) gets its
     head/hands/pelvis/torso aligned from its own map -- matching the Blender add-on.
+
+    ``alignment_markers`` (optional) restricts WHICH mapped markers drive that
+    per-segment alignment; every mapped marker is still repositioned onto the skin.
+    Use it when the map carries markers that are not anatomical IK targets -- e.g. the
+    plantar ``SOLE_*`` contact markers, soft-tissue points added for ground-contact
+    handling: letting them into the Procrustes pulls the segment off its bony landmarks
+    (measured: the calcaneus fit degrades from 1.4 cm to 2.1 cm at the heel marker).
+    ``None`` (default) keeps the legacy behaviour -- every mapped marker aligns.
 
     Elbow markers (``ELBOW_ROLL_EXEMPT_MARKERS``) are placed from the forearm's PRE-roll
     frame: they mark the humeral epicondyle, which does not pronate, so they must not
@@ -84,6 +93,9 @@ def generate_subject_osim(
         for name, indices in index_map.items()
         if indices
     }
+    if alignment_markers is not None:
+        allowed = set(alignment_markers)
+        landmark_map = {n: v for n, v in landmark_map.items() if n in allowed}
     seg_transforms = compute_segment_transforms(
         sample, model, global_transform, landmark_map=landmark_map
     )

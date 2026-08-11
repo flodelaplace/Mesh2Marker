@@ -353,3 +353,48 @@ def test_generate_returns_segment_scales_when_shape_basis_given(tmp_path):
         src, dst, corr, morph(basis, betas), shape_basis=basis
     )
     assert not np.allclose(scaled.segment_scales["femur_r"], (1.0, 1.0, 1.0))
+
+
+def test_alignment_markers_restricts_who_drives_the_fit(tmp_path):
+    """Contact-only markers can be excluded from the alignment yet still be placed."""
+    src = str(tmp_path / "src.osim")
+    dst = str(tmp_path / "out.osim")
+    # femur_r carries 3 anatomical markers plus one off-axis "contact" marker.
+    _write_synthetic_osim(
+        src,
+        markers=[
+            ("MK1", "femur_r", (0.02, 0.0, 0.0)),
+            ("MK2", "femur_r", (0.0, 0.03, 0.0)),
+            ("MK3", "femur_r", (0.0, 0.0, 0.04)),
+            ("CONTACT", "femur_r", (0.05, -0.06, 0.07)),
+        ],
+    )
+    sample = _make_sample(seed=11)
+    corr = {"MK1": [3], "MK2": [7], "MK3": [11], "CONTACT": [19]}
+    ik = ["MK1", "MK2", "MK3"]
+
+    restricted = generate_subject_osim(
+        src, dst, corr, sample, alignment_markers=ik
+    )
+    full = generate_subject_osim(src, dst, corr, sample)
+
+    # Every mapped marker is still written, including the excluded one.
+    assert set(restricted) == {"MK1", "MK2", "MK3", "CONTACT"}
+
+    # Restricting genuinely changes the fit (otherwise the test proves nothing).
+    assert not np.allclose(restricted["MK1"], full["MK1"], atol=1e-6)
+
+    # It matches a direct recomputation whose landmark_map holds only the IK markers.
+    model = parse_osim(src)
+    gt, _, _ = align_mhr_to_opensim(sample, model)
+    lm = {n: centroid_vertex(sample.verts, corr[n]) for n in ik}
+    seg = compute_segment_transforms(sample, model, gt, landmark_map=lm)
+    for name, indices in corr.items():
+        expected = reposition_marker_to_vertex(
+            model, name, sample.verts, centroid_vertex(sample.verts, indices), gt, seg
+        )
+        np.testing.assert_allclose(restricted[name], expected, atol=1e-9)
+
+    # An empty restriction is honoured (no map-driven fit at all), not treated as None.
+    none_driving = generate_subject_osim(src, dst, corr, sample, alignment_markers=[])
+    assert not np.allclose(none_driving["MK1"], full["MK1"], atol=1e-6)
