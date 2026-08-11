@@ -20,6 +20,8 @@ from mesh2marker.procrustes import SimilarityTransform
 from mesh2marker.segment_align import (
     INHERIT,
     LANDMARK_SEGMENTS,
+    MAP_OVERRIDES,
+    PIN_TO_PARENT_JOINT,
     SEGMENT_TABLE,
     _roll_matrix_about_axis,
     _rotation_about_axis,
@@ -822,3 +824,69 @@ def test_toes_follow_the_foot_not_the_shin():
     by_foot = _apply(transforms["calcn_r"], mtp)
     by_toes = _apply(transforms["toes_r"], mtp)
     np.testing.assert_allclose(by_foot, by_toes, atol=1e-12)
+
+
+def _forearm_hand_model() -> OsimModel:
+    """radius_r fit end-to-end by SEGMENT_TABLE, hand_r hanging off it at the wrist."""
+    bodies = [OsimBody(n, []) for n in ("radius_r", "hand_r")]
+    joints = [
+        _joint("elbow_r", "ground", "radius_r", [0.1, 1.4, 0.2]),
+        _joint("radius_hand_r", "radius_r", "hand_r", [0.0, -0.4, 0.0]),
+    ]
+    # Three hand markers, offset from the wrist so they can drive a Procrustes.
+    markers = [
+        OsimMarker("RThumb", "hand_r", [0.02, -0.05, 0.01]),
+        OsimMarker("RIndex", "hand_r", [0.0, -0.09, 0.02]),
+        OsimMarker("RPinky", "hand_r", [-0.02, -0.08, -0.02]),
+    ]
+    return OsimModel(name="fh", bodies=bodies, joints=joints, markers=markers)
+
+
+def test_hand_is_pinned_to_the_wrist_the_forearm_places():
+    assert "hand_r" in MAP_OVERRIDES and "hand_r" in PIN_TO_PARENT_JOINT
+
+    model = _forearm_hand_model()
+    joint_coords = np.zeros((127, 3), dtype=np.float32)
+    joint_coords[40] = [0.1, 1.4, 0.2]  # rig elbow
+    joint_coords[41] = [0.1, 1.0, 0.2]  # rig wrist
+    rng = np.random.default_rng(3)
+    verts = rng.normal(size=(40, 3)).astype(np.float32) * 0.05 + np.array(
+        [0.1, 0.95, 0.2], dtype=np.float32
+    )
+    sample = MhrSample(
+        verts=verts,
+        faces=np.zeros((1, 3), dtype=np.int32),
+        joint_coords=joint_coords,
+        keypoints=np.zeros((70, 3), dtype=np.float32),
+        frame_index=0,
+        coordinate_frame="estimator_camera_raw",
+        units="meters",
+        source="synthetic",
+    )
+    lm = {"RThumb": 1, "RIndex": 5, "RPinky": 9}
+    transforms = compute_segment_transforms(
+        sample, model, global_transform=_identity_similarity(), landmark_map=lm
+    )
+
+    wrist = joint_centers(model)["radius_hand_r"]
+    by_forearm = _apply(transforms["radius_r"], wrist)
+    by_hand = _apply(transforms["hand_r"], wrist)
+    pinned = float(np.linalg.norm(by_forearm - by_hand))
+
+    # Same fit without the pin: the hand follows only its own markers and drifts off
+    # the wrist. The pin must bring it measurably closer to where the forearm ends.
+    import mesh2marker.segment_align as _sa
+
+    saved = _sa.PIN_TO_PARENT_JOINT
+    _sa.PIN_TO_PARENT_JOINT = frozenset()
+    try:
+        free = compute_segment_transforms(
+            sample, model, global_transform=_identity_similarity(), landmark_map=lm
+        )
+    finally:
+        _sa.PIN_TO_PARENT_JOINT = saved
+    unpinned = float(np.linalg.norm(by_forearm - _apply(free["hand_r"], wrist)))
+
+    assert pinned < unpinned
+    # The hand still has its own orientation: it is NOT simply the forearm's transform.
+    assert not np.allclose(transforms["hand_r"], transforms["radius_r"], atol=1e-6)

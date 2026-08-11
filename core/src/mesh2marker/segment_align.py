@@ -89,6 +89,19 @@ ELBOW_ROLL_EXEMPT_MARKERS: frozenset[str] = frozenset({"RELB", "LELB"})
 # for models where a short distal segment carries markers only at its far end.
 RIGID_WITH: dict[str, str] = {"toes_r": "calcn_r", "toes_l": "calcn_l"}
 
+# Bodies whose hardcoded LANDMARK_SEGMENTS fit is SUPERSEDED when the correspondence
+# map covers them: the user's picked vertices beat the fixed mhr70 keypoints.
+MAP_OVERRIDES: frozenset[str] = frozenset({"hand_r", "hand_l"})
+
+# Bodies pinned to their PARENT's placement of the shared joint. This is the reverse
+# of the junction sewing below (which pulls a parent toward its child): here the child
+# is pulled onto a parent that is confidently placed. The hand is fit on its own few
+# markers with a free scale, which left it 5.0 cm from where the forearm ends -- the
+# wrist visibly came apart. Pinning it closes that to ~1.2 cm while keeping the
+# fingers on the skin (making it fully rigid with the forearm instead costs 7 cm at
+# the fingers: unlike the foot, the hand has a genuine orientation of its own).
+PIN_TO_PARENT_JOINT: frozenset[str] = frozenset({"hand_r", "hand_l"})
+
 # body -> ancestor body whose correction it inherits. Order matters: a child listed
 # after its source picks up whatever that source ended up with (fit or inherited).
 # The toes follow the FOOT (their parent across the mtp joint), not the shin: when the
@@ -399,7 +412,9 @@ def compute_segment_transforms(
         for marker_name, vertex_index in landmark_map.items():
             body = body_of.get(marker_name)
             body = RIGID_WITH.get(body, body)  # pool a rigid child into its parent
-            if body is None or body in transforms or marker_name not in marker_world:
+            if body is None or marker_name not in marker_world:
+                continue
+            if body in transforms and body not in MAP_OVERRIDES:
                 continue
             target = mhr_world("vertex", int(vertex_index))
             if target is None:
@@ -437,6 +452,25 @@ def compute_segment_transforms(
         for child, ancestor in RIGID_WITH.items():
             if ancestor in transforms:
                 transforms[child] = transforms[ancestor].copy()
+
+        # Pin a PIN_TO_PARENT_JOINT body onto its parent's placement of their shared
+        # joint: refit it with that joint added as an extra pair, weighted like a third
+        # of its markers (same idiom as the junction sewing below).
+        parent_of = {jt.child_body: (jt.parent_body, jt.name) for jt in model.joints}
+        for child in list(map_pairs):
+            if child not in PIN_TO_PARENT_JOINT:
+                continue
+            info = parent_of.get(child)
+            if info is None:
+                continue
+            parent, joint_name = info
+            if parent not in transforms or joint_name not in centers:
+                continue
+            jn = np.asarray(centers[joint_name], dtype=float)
+            parent_m = transforms[parent]
+            anchor = (jn, parent_m[:3, :3] @ jn + parent_m[:3, 3])
+            weight = max(1, round(len(map_pairs[child]) / 3))
+            transforms[child] = _fit_pairs(map_pairs[child] + [anchor] * weight)
 
         # A map-fit head sits perfectly by its markers (front/back/top all on the
         # skin), but the skull MESH extends posterior to its back-of-head markers
