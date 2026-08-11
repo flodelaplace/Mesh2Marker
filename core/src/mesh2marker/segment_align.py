@@ -81,16 +81,29 @@ FOREARM_ROLL_REFERENCE: dict[str, tuple[str, str]] = {
 # apply_forearm_roll=False). Without this they swing several cm about the long axis.
 ELBOW_ROLL_EXEMPT_MARKERS: frozenset[str] = frozenset({"RELB", "LELB"})
 
-# body -> ancestor body whose correction it inherits.
+# Bodies kept RIGID with an ancestor for the map-driven fit: their mapped markers are
+# pooled into the ancestor's Procrustes and they receive its transform, so the shared
+# joint cannot tear open. Empty by default: pooling the toes into the foot removes the
+# mtp gap and the toe tipping, but it also flattens the toe segment's own orientation,
+# which measured WORSE on the plantar seating for the Pose2Sim foot. Kept as the hook
+# for models where a short distal segment carries markers only at its far end.
+RIGID_WITH: dict[str, str] = {"toes_r": "calcn_r", "toes_l": "calcn_l"}
+
+# body -> ancestor body whose correction it inherits. Order matters: a child listed
+# after its source picks up whatever that source ended up with (fit or inherited).
+# The toes follow the FOOT (their parent across the mtp joint), not the shin: when the
+# foot is fit on its own markers and the toes inherited the tibia instead, the toes
+# bone was left dislocated at the mtp joint (measured: 0.5 cm on the Pose2Sim map,
+# 2.9 cm on the SKEL map, where it also dragged the RTOE/RFPI IK markers 3-4 cm).
 INHERIT: dict[str, str] = {
     "patella_r": "femur_r",
     "patella_l": "femur_l",
     "talus_r": "tibia_r",
     "calcn_r": "tibia_r",
-    "toes_r": "tibia_r",
+    "toes_r": "calcn_r",
     "talus_l": "tibia_l",
     "calcn_l": "tibia_l",
-    "toes_l": "tibia_l",
+    "toes_l": "calcn_l",
     "sacrum": "pelvis",  # the sacrum follows the pelvis
 }
 
@@ -385,6 +398,7 @@ def compute_segment_transforms(
         grouped: dict[str, list[tuple[np.ndarray, np.ndarray]]] = {}
         for marker_name, vertex_index in landmark_map.items():
             body = body_of.get(marker_name)
+            body = RIGID_WITH.get(body, body)  # pool a rigid child into its parent
             if body is None or body in transforms or marker_name not in marker_world:
                 continue
             target = mhr_world("vertex", int(vertex_index))
@@ -417,6 +431,12 @@ def compute_segment_transforms(
             if len(pairs) >= LANDMARK_MIN_PAIRS:
                 map_pairs[body] = pairs
                 transforms[body] = _fit_pairs(pairs)
+
+        # Rigid children take their ancestor's transform, so the shared joint cannot
+        # tear open (their markers already fed that ancestor's fit above).
+        for child, ancestor in RIGID_WITH.items():
+            if ancestor in transforms:
+                transforms[child] = transforms[ancestor].copy()
 
         # A map-fit head sits perfectly by its markers (front/back/top all on the
         # skin), but the skull MESH extends posterior to its back-of-head markers

@@ -767,3 +767,58 @@ def test_apply_forearm_roll_toggle_rolls_only_when_enabled():
     for jc in ([0.1, 1.4, 0.2], [0.1, 1.0, 0.2]):
         p = rolled["ulna_r"][:3, :3] @ jc + rolled["ulna_r"][:3, 3]
         np.testing.assert_allclose(p, jc, atol=1e-6)
+
+
+def _foot_model() -> OsimModel:
+    """tibia -> talus -> calcn -> toes, with three markers to map-fit the calcn."""
+    names = ("tibia_r", "talus_r", "calcn_r", "toes_r")
+    bodies = [OsimBody(n, []) for n in names]
+    joints = [
+        _joint("walker_knee_r", "ground", "tibia_r", [0.1, 0.5, 0.08]),
+        _joint("ankle_r", "tibia_r", "talus_r", [0.0, -0.4, 0.0]),
+        _joint("subtalar_r", "talus_r", "calcn_r", [0.0, -0.04, 0.0]),
+        _joint("mtp_r", "calcn_r", "toes_r", [0.15, -0.02, 0.0]),
+    ]
+    markers = [
+        OsimMarker("RCAL", "calcn_r", [-0.02, 0.0, 0.0]),
+        OsimMarker("RTOE", "calcn_r", [0.18, 0.0, 0.01]),
+        OsimMarker("RMT5", "calcn_r", [0.14, 0.0, 0.05]),
+    ]
+    return OsimModel(name="foot", bodies=bodies, joints=joints, markers=markers)
+
+
+def test_toes_follow_the_foot_not_the_shin():
+    # The toes' parent across the mtp joint is the calcaneus. Inheriting the tibia
+    # instead left the toes bone dislocated at the mtp joint.
+    assert INHERIT["toes_r"] == "calcn_r"
+    assert INHERIT["toes_l"] == "calcn_l"
+
+    model = _foot_model()
+    rng = np.random.default_rng(4)
+    verts = rng.normal(size=(30, 3)).astype(np.float32)
+    sample = MhrSample(
+        verts=verts,
+        faces=np.zeros((1, 3), dtype=np.int32),
+        joint_coords=np.zeros((127, 3), dtype=np.float32),
+        keypoints=np.zeros((70, 3), dtype=np.float32),
+        frame_index=0,
+        coordinate_frame="estimator_camera_raw",
+        units="meters",
+        source="synthetic",
+    )
+    # Map the three calcn markers so the foot gets its own map-driven fit.
+    transforms = compute_segment_transforms(
+        sample,
+        model,
+        global_transform=_identity_similarity(),
+        landmark_map={"RCAL": 1, "RTOE": 5, "RMT5": 9},
+    )
+
+    # The toes ride the foot's correction, not the shin's ...
+    np.testing.assert_allclose(transforms["toes_r"], transforms["calcn_r"], atol=1e-12)
+    assert not np.allclose(transforms["toes_r"], transforms["tibia_r"], atol=1e-6)
+    # ... so the shared mtp joint centre lands in ONE place (no dislocated toe bone).
+    mtp = joint_centers(model)["mtp_r"]
+    by_foot = _apply(transforms["calcn_r"], mtp)
+    by_toes = _apply(transforms["toes_r"], mtp)
+    np.testing.assert_allclose(by_foot, by_toes, atol=1e-12)
