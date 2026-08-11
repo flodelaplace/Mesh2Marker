@@ -5,9 +5,10 @@ defined, and it must stay aligned with the Mesh2Sim shared contract
 (``mesh2sim.contracts``). The values below are the FULL set for the production
 model ``Pose2Sim_Wholebody`` (frozen snapshot in ``reference/opensim_model.json``):
 the shared landmark vocabulary is the 73 stock marker names plus the Mesh2Sim
-add-on markers ``XIPH`` (xiphoid, ``torso``) and ``RGTR``/``LGTR`` (greater
-trochanter, ``femur_r``/``femur_l``), all registered in ``mesh2sim.contracts``,
-and the 30 body names are the model's segments.
+add-on markers ``XIPH`` (xiphoid, ``torso``), ``RGTR``/``LGTR`` (greater
+trochanter, ``femur_r``/``femur_l``) and the 14 ``SOLE_s1..s7_r/l`` plantar
+contact markers, all registered in ``mesh2sim.contracts``, and the 30 body names
+are the model's segments.
 
 Names are case-sensitive and must be used verbatim. Gotchas worth remembering:
 ``"Abdomen"`` is capitalized; ``"RWrist_hand"`` / ``"LWrist_hand"`` use an
@@ -81,6 +82,13 @@ LANDMARK_NAMES: frozenset[str] = frozenset(
         "LCAL",
         "LTOE",
         "LMT5",
+        # Mesh2Sim add-on markers: the plantar CONTACT markers, one per foot
+        # ContactSphere (s1..s6) plus s7 at the base of the toes. They are ground-
+        # contact landmarks, NOT IK targets -- s5..s7 sit on ``toes_*``, s1..s4 on
+        # ``calcn_*``. s7 exists so ``toes`` carries the 3 mapped markers a
+        # per-segment Procrustes needs. Register them in mesh2sim.contracts
+        # (``vocab.register_landmarks``) before a map using them is validated.
+        *(f"SOLE_s{i}_{side}" for i in range(1, 8) for side in ("r", "l")),
         # Hands
         "RWrist_hand",
         "RThumb",

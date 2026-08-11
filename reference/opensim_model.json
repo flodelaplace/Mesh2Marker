@@ -5,8 +5,8 @@
     "model_name_verbatim": "Pose2Sim_WithMusclesAndConstraints",
     "opensim_document_version": "40000",
     "derived_family": "Full-body Pose2Sim model (Pagnon et al. 2021), adapted from Beaucage-Gauvreau et al. with Rajagopal et al. knee angles. Not stock Rajagopal2016, not Lai-Uhlrich.",
-    "credits_verbatim": "Full-body model adapted from Beaucage-Gauvreau et al., with Rajagopal et al. knee angles. Contact spheres and Muscles included. Free pelvis translation, added ball joint between head and torso, locked arm pronation/supination, clamped hip flexion to 150° instead of 120°, hip adduction -60° instead of -50°, hip rotation -70° instead of -40°, knee 155° instead of 120°. Clamped shoulder DOFs: arm_flex [-60°, 180°], arm_add [-120°, 90°], arm_rot [-90°, 90°] to prevent IK arm lock-up.",
-    "publications_verbatim": "Pagnon, D., Domalain, M., Reveret, L. (2021). Pose2Sim: An End-to-End Workflow for 3D Markerless Sports Kinematics—Part 1: Robustness. Sensors, 21(19), 6530."
+    "credits_verbatim": "Full-body model adapted from Beaucage-Gauvreau et al., with Rajagopal et al. knee angles. Contact spheres and Muscles included. Free pelvis translation, added ball joint between head and torso, locked arm pronation/supination, clamped hip flexion to 150\u00b0 instead of 120\u00b0, hip adduction -60\u00b0 instead of -50\u00b0, hip rotation -70\u00b0 instead of -40\u00b0, knee 155\u00b0 instead of 120\u00b0. Clamped shoulder DOFs: arm_flex [-60\u00b0, 180\u00b0], arm_add [-120\u00b0, 90\u00b0], arm_rot [-90\u00b0, 90\u00b0] to prevent IK arm lock-up.",
+    "publications_verbatim": "Pagnon, D., Domalain, M., Reveret, L. (2021). Pose2Sim: An End-to-End Workflow for 3D Markerless Sports Kinematics\u2014Part 1: Robustness. Sensors, 21(19), 6530."
   },
   "units_and_axes": {
     "length_units": "meters",
@@ -741,6 +741,76 @@
         "name": "LTIB",
         "parent_body": "tibia_l",
         "location": "0.029727614 -0.20862907 -0.01266402"
+      },
+      {
+        "name": "SOLE_s1_r",
+        "parent_body": "calcn_r",
+        "location": "0.016743257 -0.0081006548 -0.0041021353"
+      },
+      {
+        "name": "SOLE_s1_l",
+        "parent_body": "calcn_l",
+        "location": "0.016679884 -0.0080820375 0.0041088802"
+      },
+      {
+        "name": "SOLE_s2_r",
+        "parent_body": "calcn_r",
+        "location": "0.15807044 -0.019382907 -0.019921822"
+      },
+      {
+        "name": "SOLE_s2_l",
+        "parent_body": "calcn_l",
+        "location": "0.15806517 -0.019340281 0.020074232"
+      },
+      {
+        "name": "SOLE_s3_r",
+        "parent_body": "calcn_r",
+        "location": "0.14105978 -0.016987891 0.041672066"
+      },
+      {
+        "name": "SOLE_s3_l",
+        "parent_body": "calcn_l",
+        "location": "0.14104442 -0.016954489 -0.041550791"
+      },
+      {
+        "name": "SOLE_s4_r",
+        "parent_body": "calcn_r",
+        "location": "0.067445552 -0.0093687656 0.011887628"
+      },
+      {
+        "name": "SOLE_s4_l",
+        "parent_body": "calcn_l",
+        "location": "0.067432356 -0.0094125078 -0.01183117"
+      },
+      {
+        "name": "SOLE_s5_r",
+        "parent_body": "toes_r",
+        "location": "0.058746358 -0.018417409 -0.01797238"
+      },
+      {
+        "name": "SOLE_s5_l",
+        "parent_body": "toes_l",
+        "location": "0.05871675 -0.018371927 0.018102652"
+      },
+      {
+        "name": "SOLE_s6_r",
+        "parent_body": "toes_r",
+        "location": "0.033706604 -0.015939255 0.038253172"
+      },
+      {
+        "name": "SOLE_s6_l",
+        "parent_body": "toes_l",
+        "location": "0.03370939 -0.015892269 -0.038028772"
+      },
+      {
+        "name": "SOLE_s7_r",
+        "parent_body": "toes_r",
+        "location": "0.010807649 -0.017760386 0.010888415"
+      },
+      {
+        "name": "SOLE_s7_l",
+        "parent_body": "toes_l",
+        "location": "0.010808465 -0.017650096 -0.010707066"
       }
     ]
   }
