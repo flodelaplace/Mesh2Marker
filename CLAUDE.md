@@ -113,6 +113,51 @@ not covered).
 - Small, atomic commits. Tests first on the core.
 - All repo content (code, comments, commit messages, docs) in English.
 
+## Wrist markers are FROZEN, and why (resolved 2026-08-24)
+
+Load-bearing, and easy to undo by accident. `WRIST_FROZEN_MARKERS` (generate.py) keeps the wrist
+markers at their model location instead of reposing them onto the skin. Do not "fix" this by
+re-enabling their mapping without reading what follows.
+
+**The failure it prevents.** Skin placement goes through the per-segment transform. For the
+forearm, the end-to-end fit (elbow -> wrist) pins the bone AXIS but leaves the rotation ABOUT that
+axis undetermined. At the wrist, whose two markers sit diametrically opposite, that free rotation
+is exactly the one that displaces them most. Measured on the Synkro model: the wrist markers landed
+**75 deg** away from the true styloid axis, and the IK rotated the forearm halfway trying to reach
+targets no pose could satisfy.
+
+**Why `FOREARM_ROLL_REFERENCE` does not save us.** Two independent reasons. It is keyed on
+RWRA/RWRB, absent from marker sets that name them otherwise (RFAradius/RFAulna, RWR/RWRM). And even
+with the right names it changes NOTHING: it aligns the model's marker direction onto the mesh's,
+but the model's markers are already the output of the faulty path. It is a fixed point. **A
+regeneration that reproduces the source model proves nothing** -- the error is only visible against
+the SKELETON.
+
+**The root cause is anatomical.** Pronation is not a rigid rotation of the forearm: the radius
+crosses over the ulna, the proximal end barely moves while the distal end turns ~90 deg. But
+`SEGMENT_TABLE` treats `ulna_r` and `radius_r` as one rigid block sharing a single roll, so no roll
+value satisfies the elbow AND the wrist at once. Freezing sidesteps this; properly modelling it
+would mean decoupling radius from ulna (map everything -> rotate the radius about the `pro_sup`
+axis -> map the wrist). That work is NOT done and is optional while the freeze holds.
+
+**Why freezing is cheap.** The styloids are bony prominences with almost no soft tissue, so their
+position varies little between subjects, and the downstream ScaleTool still scales the radius so
+subject size is honoured. Measured on a random subject (betas ~ N(0,1)): 0.00 cm displacement when
+frozen against 4.0-4.5 cm when mapped, with the other 83 markers bit-identical in both modes.
+
+**How to arbitrate this kind of dispute.** When the correspondence map and the model's markers
+contradict each other, neither can judge itself. Use the model's OWN bone meshes
+(`radius_rv.vtp` / `ulna_rv.vtp`) as the neutral referee. To tell radial from ulnar, use the thumb:
+the radial styloid is on the thumb side (verified on the MHR mesh, +0.90 toward `RThumb`).
+
+**Not a bug, do not chase it.** `forward_kinematics` ignores `<default_value>` and poses the model
+at q=0, while some models author a pronated default (`pro_sup = 90 deg`). That plausibly explains
+HOW bad marker coordinates got authored, but it has no effect on the IK: marker locations are
+expressed in the parent BODY frame, hence pose-independent.
+
+Backwards compatible: `frozen_markers=()` by default, so the validated Pose2Sim path is untouched.
+The `generate` CLI freezes by default and exposes `--map-wrist` to restore the old behaviour.
+
 ## Dev and test
 - core: WSL, plain pytest, Linux CI.
 - blender_addon: tested via Blender background mode (blender --background --python ...) or in a

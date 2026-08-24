@@ -20,6 +20,37 @@ from .mhr import MhrSample
 from .morph import ShapeBasis, morph
 from .osim import parse_osim, write_osim_with_markers
 from .segment_align import ELBOW_ROLL_EXEMPT_MARKERS, compute_segment_transforms
+
+# Wrist markers, KEPT at their model location instead of being reposed onto the skin.
+#
+# Why freeze rather than map. Skin placement goes through the segment transform, and for the
+# forearm that transform has an UNDETERMINED component: the end-to-end fit (elbow -> wrist) pins
+# the bone AXIS but not the rotation ABOUT it. At the wrist, whose two markers sit diametrically
+# opposite each other, that free rotation is precisely the one that displaces them most. Measured
+# on the Synkro model: the markers ended up 75 deg away from the true styloid axis read off the
+# model's OWN bone meshes (radius_rv.vtp / ulna_rv.vtp), and the IK rotated the forearm halfway
+# trying to satisfy targets no pose could reach.
+#
+# FOREARM_ROLL_REFERENCE exists to recover that roll but cannot help here, for two separate
+# reasons. It is keyed on RWRA/RWRB, absent from this marker set. And even with the right names it
+# changes nothing: it aligns the MODEL's marker direction onto the MESH's, yet the model's markers
+# are already the output of the faulty path -- a fixed point. The error is only visible against the
+# SKELETON, never against a regeneration.
+#
+# The root cause is anatomical: pronation is NOT a rigid rotation of the forearm. The radius
+# crosses over the ulna, the proximal end barely moves and the distal end turns ~90 deg, whereas
+# SEGMENT_TABLE treats ulna and radius as one rigid block sharing a single roll. No roll value can
+# therefore satisfy the elbow AND the wrist at once.
+#
+# Freezing sidesteps that and costs little: the styloids are BONY prominences with almost no soft
+# tissue, so their position varies little between subjects. Subject size is still honoured -- the
+# downstream ScaleTool scales the radius and the markers follow. What is lost is second order;
+# what is avoided is a 75 deg error.
+WRIST_FROZEN_MARKERS: frozenset[str] = frozenset({
+    "RFAradius", "RFAulna", "LFAradius", "LFAulna",   # RGTR / synkro
+    "RWRA", "RWRB", "LWRA", "LWRB",                    # Pose2Sim
+    "RWR", "RWRM", "LWR", "LWRM",                      # CER / Hagen2026
+})
 from .segment_scale import segment_scales_from_joints
 
 
@@ -52,6 +83,7 @@ def generate_subject_osim(
     *,
     shape_basis: ShapeBasis | None = None,
     alignment_markers=None,
+    frozen_markers=(),
 ):
     """Write ``dst`` = ``src`` with mapped markers moved onto ``sample``'s skin.
 
@@ -63,6 +95,11 @@ def generate_subject_osim(
     The correspondence also drives the per-segment alignment (``landmark_map``), so a
     model whose marker names differ from the Pose2Sim vocabulary (e.g. SKEL) gets its
     head/hands/pelvis/torso aligned from its own map -- matching the Blender add-on.
+
+    ``frozen_markers`` (optional) lists markers KEPT at their model location instead of
+    being repositioned onto the skin -- see :data:`WRIST_FROZEN_MARKERS` for why the wrist
+    pair belongs there. They still drive the per-segment alignment; only their own
+    replacement is skipped. Empty by default, so existing callers are unchanged.
 
     ``alignment_markers`` (optional) restricts WHICH mapped markers drive that
     per-segment alignment; every mapped marker is still repositioned onto the skin.
@@ -105,8 +142,17 @@ def generate_subject_osim(
 
     model_markers = {m.name for m in model.markers}
     locations: dict[str, tuple[float, float, float]] = {}
+    frozen = set(frozen_markers or ())
+    model_location = {m.name: tuple(float(c) for c in m.location) for m in model.markers}
     for marker_name, indices in index_map.items():
         if not indices or marker_name not in model_markers:
+            continue
+        if marker_name in frozen:
+            # Keeps its model location: see WRIST_FROZEN_MARKERS. It stays in landmark_map, so it
+            # still orients the segment; only its own skin REPLACEMENT is skipped. It is still
+            # RETURNED, at the model value: a marker missing from the dict would be
+            # indistinguishable from one that was silently dropped.
+            locations[marker_name] = model_location[marker_name]
             continue
         idx = centroid_vertex(sample.verts, list(indices))
         seg = seg_transforms

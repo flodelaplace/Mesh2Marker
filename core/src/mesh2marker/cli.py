@@ -16,7 +16,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .generate import generate_subject_osim, sample_from_betas
+from .generate import WRIST_FROZEN_MARKERS, generate_subject_osim, sample_from_betas
 from .io import read as read_correspondence
 from .mhr import MhrSample, load_mhr_npz
 from .morph import load_shape_basis
@@ -50,7 +50,9 @@ def _sample_for_generate(args) -> MhrSample:
 def cmd_generate(args) -> int:
     correspondence = _correspondence_map(args.map)
     sample = _sample_for_generate(args)
-    locations = generate_subject_osim(args.osim, args.output, correspondence, sample)
+    frozen = () if getattr(args, "map_wrist", False) else WRIST_FROZEN_MARKERS
+    locations = generate_subject_osim(args.osim, args.output, correspondence, sample,
+                                      frozen_markers=frozen)
     print(f"Wrote {len(locations)} marker locations -> {args.output}")
     return 0
 
@@ -102,6 +104,10 @@ def build_parser() -> argparse.ArgumentParser:
     gen.add_argument("--basis", help="shape basis .npz (with --betas)")
     gen.add_argument("--betas", help="comma-separated shape coefficients")
     gen.add_argument("--betas-file", help="betas as .npy or .json")
+    gen.add_argument("--map-wrist", action="store_true",
+                     help="also repose the WRIST markers onto the skin; by default they keep "
+                          "their model location (see WRIST_FROZEN_MARKERS: the forearm roll is "
+                          "undetermined and was moving them 75 deg off the true styloid axis)")
     gen.set_defaults(func=cmd_generate)
 
     batch = sub.add_parser("batch", help="many subjects -> one .osim each")
