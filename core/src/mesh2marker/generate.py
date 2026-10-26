@@ -186,7 +186,7 @@ TRUNK_BODIES = ("lumbar5", "lumbar4", "lumbar3", "lumbar2", "lumbar1", "Abdomen"
 
 
 def trunk_after_pelvis(seg_transforms: dict, model, sample: MhrSample, global_transform,
-                       pelvis_scale) -> dict[str, tuple[float, float, float]]:
+                       pelvis_scale, target_span: float | None = None) -> dict[str, tuple[float, float, float]]:
     """Trunk scale computed AFTER the pelvis, so the skeleton keeps its hip-to-shoulder height (edits ``seg_transforms``).
 
     The hip-to-shoulder span crosses the pelvis (hips -> L5/S1) then the lumbar column and torso. Its length is
@@ -210,6 +210,8 @@ def trunk_after_pelvis(seg_transforms: dict, model, sample: MhrSample, global_tr
     hips = [SEGMENT_TABLE["femur_r"][2], SEGMENT_TABLE["femur_l"][2]]
     shoulders = [SEGMENT_TABLE["humerus_r"][2], SEGMENT_TABLE["humerus_l"][2]]
     D = float(np.linalg.norm((J(shoulders[0]) + J(shoulders[1])) / 2 - (J(hips[0]) + J(hips[1])) / 2))
+    if target_span is not None:  # hauteur hanches -> epaules donnee (ex. centres articulaires de l'essai)
+        D = float(target_span)
     u = np.diag(np.asarray(pelvis_scale, float).reshape(3)) @ (B - H)
     v = S - B
     a, b, cc = float(v @ v), float(2 * u @ v), float(u @ u - D * D)
@@ -245,6 +247,7 @@ def generate_subject_osim(
     frame_scales: bool = False,
     imposed_scales: dict | None = None,
     trunk: str | None = None,
+    trunk_span: float | None = None,
 ):
     """Write ``dst`` = ``src`` with mapped markers moved onto ``sample``'s skin.
 
@@ -324,7 +327,8 @@ def generate_subject_osim(
     if trunk == "after_pelvis":
         # the trunk AFTER the pelvis: the subject's hip -> shoulder height is kept
         ps = aniso.get("pelvis") or (frame_scale(seg_transforms["pelvis"]),) * 3
-        aniso.update(trunk_after_pelvis(seg_transforms, model, sample, global_transform, ps))
+        aniso.update(trunk_after_pelvis(seg_transforms, model, sample, global_transform, ps,
+                                        target_span=trunk_span))
     elif trunk is not None:
         raise ValueError(f"unknown trunk option {trunk!r} (expected None or 'after_pelvis')")
     # Lazily built only if an elbow-exempt marker is actually present: the same
