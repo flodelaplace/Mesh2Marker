@@ -248,6 +248,7 @@ def generate_subject_osim(
     imposed_scales: dict | None = None,
     trunk: str | None = None,
     trunk_span: float | None = None,
+    global_scale: bool = True,
 ):
     """Write ``dst`` = ``src`` with mapped markers moved onto ``sample``'s skin.
 
@@ -287,6 +288,8 @@ def generate_subject_osim(
       ``shape_basis``.
     - ``imposed_scales`` ({body: (sx, sy, sz)}) -> those bodies keep the fit's placement but take
       the given size, and their markers are expressed for it (one scale source for the whole chain).
+    - ``global_scale=False`` -> rigid global alignment (subject given at true metric size): segment
+      scales are absolute sizes rather than proportions.
     - ``trunk="after_pelvis"`` -> lumbar column + torso scaled AFTER the pelvis so the hip-to-shoulder
       height of the subject is kept (see :func:`trunk_after_pelvis`).
     - ``pelvis="hara2016"`` -> pelvis width from Hara et al. 2016 on the fitted leg length
@@ -299,7 +302,10 @@ def generate_subject_osim(
     """
     index_map = _as_index_map(correspondence)
     model = parse_osim(src_osim_path)
-    global_transform, _, _ = align_mhr_to_opensim(sample, model)
+    # global_scale=False : calage RIGIDE (rotation + translation) du sujet sur le modele. A utiliser quand le sujet
+    # est donne a sa vraie taille (metres) : les echelles par segment deviennent alors des tailles ABSOLUES, au lieu de
+    # proportions apres une similitude globale qui ramene tout le corps a la taille du modele.
+    global_transform, _, _ = align_mhr_to_opensim(sample, model, with_scale=global_scale)
     landmark_map = {
         name: centroid_vertex(sample.verts, list(indices))
         for name, indices in index_map.items()
@@ -320,8 +326,10 @@ def generate_subject_osim(
                 impose_body_scale(seg_transforms, model, b_name, sc)
                 aniso[b_name] = tuple(float(x) for x in np.asarray(sc, float).reshape(3))
     if pelvis == "hara2016":
+        _longs = {k: v for k, v in (imposed_scales or {}).items()
+                  if k in ("femur_r", "femur_l", "tibia_r", "tibia_l")}
         aniso.update(pelvis_hara2016(seg_transforms, model, sample, global_transform,
-                                     long_scales=imposed_scales or None))
+                                     long_scales=_longs or None))
     elif pelvis is not None:
         raise ValueError(f"unknown pelvis option {pelvis!r} (expected None or 'hara2016')")
     if trunk == "after_pelvis":
