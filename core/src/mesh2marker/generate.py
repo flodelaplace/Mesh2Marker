@@ -182,6 +182,49 @@ def pelvis_hara2016(seg_transforms: dict, model, sample: MhrSample, global_trans
     return out
 
 
+TRUNK_BODIES = ("lumbar5", "lumbar4", "lumbar3", "lumbar2", "lumbar1", "Abdomen", "torso")
+
+
+def trunk_after_pelvis(seg_transforms: dict, model, sample: MhrSample, global_transform,
+                       pelvis_scale) -> dict[str, tuple[float, float, float]]:
+    """Trunk scale computed AFTER the pelvis, so the skeleton keeps its hip-to-shoulder height (edits ``seg_transforms``).
+
+    The hip-to-shoulder span crosses the pelvis (hips -> L5/S1) then the lumbar column and torso. Its length is
+    the subject's (mid-hip -> mid-shoulder of the rig at rest). With the pelvis already sized (``pelvis_scale``,
+    body frame), the trunk bodies get ONE isotropic scale s solving
+    ``| diag(pelvis_scale) (B - H) + s (S - B) | = D_subject``, H/B/S = mid-hip, L5/S1 and mid-shoulder of the
+    neutral model. Sizing the pelvis without this left the shoulders ~3 cm low (P16), and the downstream fit
+    inflated the head (x1.16 -> x1.30) to reach the head markers.
+    """
+    from .kinematics import joint_centers
+    from .segment_align import SEGMENT_TABLE
+
+    c = {k: np.asarray(v, float) for k, v in joint_centers(model).items()}
+    need = ("hip_r", "hip_l", "L5_S1_IVDjnt", "acromial_r", "acromial_l")
+    if not all(k in c for k in need):
+        return {}
+    H = (c["hip_r"] + c["hip_l"]) / 2
+    B = c["L5_S1_IVDjnt"]
+    S = (c["acromial_r"] + c["acromial_l"]) / 2
+    J = lambda i: np.asarray(global_transform.apply(np.asarray(sample.joint_coords[i], float)), float)  # noqa: E731
+    hips = [SEGMENT_TABLE["femur_r"][2], SEGMENT_TABLE["femur_l"][2]]
+    shoulders = [SEGMENT_TABLE["humerus_r"][2], SEGMENT_TABLE["humerus_l"][2]]
+    D = float(np.linalg.norm((J(shoulders[0]) + J(shoulders[1])) / 2 - (J(hips[0]) + J(hips[1])) / 2))
+    u = np.diag(np.asarray(pelvis_scale, float).reshape(3)) @ (B - H)
+    v = S - B
+    a, b, cc = float(v @ v), float(2 * u @ v), float(u @ u - D * D)
+    disc = b * b - 4 * a * cc
+    if a <= 0 or disc < 0:
+        return {}
+    s_t = (-b + np.sqrt(disc)) / (2 * a)
+    out = {}
+    for bd in TRUNK_BODIES:
+        if bd in {x.name for x in model.bodies}:
+            impose_body_scale(seg_transforms, model, bd, (s_t, s_t, s_t))
+            out[bd] = (float(s_t),) * 3
+    return out
+
+
 def _as_index_map(correspondence) -> dict[str, list[int]]:
     """Accept either a CorrespondenceFile or a plain {marker: indices} mapping."""
     if hasattr(correspondence, "markers"):
@@ -201,6 +244,7 @@ def generate_subject_osim(
     pelvis: str | None = None,
     frame_scales: bool = False,
     imposed_scales: dict | None = None,
+    trunk: str | None = None,
 ):
     """Write ``dst`` = ``src`` with mapped markers moved onto ``sample``'s skin.
 
@@ -240,6 +284,8 @@ def generate_subject_osim(
       ``shape_basis``.
     - ``imposed_scales`` ({body: (sx, sy, sz)}) -> those bodies keep the fit's placement but take
       the given size, and their markers are expressed for it (one scale source for the whole chain).
+    - ``trunk="after_pelvis"`` -> lumbar column + torso scaled AFTER the pelvis so the hip-to-shoulder
+      height of the subject is kept (see :func:`trunk_after_pelvis`).
     - ``pelvis="hara2016"`` -> pelvis width from Hara et al. 2016 on the fitted leg length
       instead of the global bone scale (see :func:`pelvis_hara2016`); pelvis markers are
       expressed for that pelvis.
@@ -275,6 +321,12 @@ def generate_subject_osim(
                                      long_scales=imposed_scales or None))
     elif pelvis is not None:
         raise ValueError(f"unknown pelvis option {pelvis!r} (expected None or 'hara2016')")
+    if trunk == "after_pelvis":
+        # the trunk AFTER the pelvis: the subject's hip -> shoulder height is kept
+        ps = aniso.get("pelvis") or (frame_scale(seg_transforms["pelvis"]),) * 3
+        aniso.update(trunk_after_pelvis(seg_transforms, model, sample, global_transform, ps))
+    elif trunk is not None:
+        raise ValueError(f"unknown trunk option {trunk!r} (expected None or 'after_pelvis')")
     # Lazily built only if an elbow-exempt marker is actually present: the same
     # transforms but with the forearm roll disabled, so epicondyle markers stay put.
     seg_no_roll: dict | None = None
