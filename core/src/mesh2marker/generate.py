@@ -14,6 +14,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import numpy as np
+
 from .alignment import align_mhr_to_opensim
 from .linking import centroid_vertex, reposition_marker_to_vertex
 from .mhr import MhrSample
@@ -68,6 +70,99 @@ class SubjectOsim:
     segment_scales: dict[str, tuple[float, float, float]]
 
 
+def frame_scale(matrix) -> float:
+    """Isotropic scale of a per-segment similarity (mean column norm of its 3x3 block)."""
+    return float(np.linalg.norm(np.asarray(matrix, dtype=float)[:3, :3], axis=0).mean())
+
+
+def marker_frame_scales(seg_transforms: dict, bodies, anisotropic: dict | None = None
+                        ) -> dict[str, tuple[float, float, float]]:
+    """Scale of the frame each body's markers were expressed in, per OpenSim body.
+
+    Marker locations are written as ``inv(seg[body] @ world[body]) @ skin_vertex``: they are
+    expressed in the body frame AS RESIZED by ``seg[body]``. A downstream fit must give the body
+    exactly this scale for the markers to land back on the skin; any other scale moves them off
+    it by the ratio (a body scaled 1.36 against a frame of 1.03 pushes its markers 32 % outward).
+    Bodies without a transform were not resized (1.0). ``anisotropic`` carries per-axis overrides
+    (body frame), e.g. the Hara pelvis.
+    """
+    aniso = anisotropic or {}
+    out: dict[str, tuple[float, float, float]] = {}
+    for b in bodies:
+        m = seg_transforms.get(b)
+        if b in aniso:
+            out[b] = aniso[b]
+        elif m is None:
+            out[b] = (1.0, 1.0, 1.0)
+        else:
+            s = frame_scale(m)
+            out[b] = (s, s, s)
+    return out
+
+
+def pelvis_hara2016(seg_transforms: dict, model, sample: MhrSample, global_transform
+                    ) -> dict[str, tuple[float, float, float]]:
+    """Pelvis WIDTH from Hara et al. 2016 instead of the global bone scale (edits ``seg_transforms``).
+
+    Hara R, McGinley J, Briggs C, Baker R, Sangeux M. Predicting the location of the hip joint
+    centres, impact of age group and sex. Sci Rep 2016;6:37707 (post-mortem CT, n = 157): the
+    medio-lateral hip-centre coordinate from mid-ASIS is 8 + 0.086 LL mm, LL = bony leg length
+    ASIS -> medial epicondyle -> medial malleolus, so the inter-hip-centre distance is
+    2 (8 + 0.086 LL). LL comes from the SAME long-bone fit as the rest of the skeleton (femur +
+    tibia rig spans) plus the ASIS -> hip-centre height 9 + 0.078 LL of the same paper:
+    LL = (9 + F + T) / (1 - 0.078). Never from the skin, so it does not grow with adiposity
+    (Brynskog et al. 2021, J Biomech, CT, BMI 28: pelvic bone size barely depends on BMI).
+
+    The pelvis keeps the rotation and origin placement of its landmark fit; its frame gets the
+    anisotropic scale (s_bone, s_bone, s_width) in the OpenSim pelvis frame (z = medio-lateral),
+    s_bone = mean femur/tibia frame scale. The sacrum, rigid with it, follows. Returns the
+    per-axis scales of the overridden bodies ({} if the inputs are missing).
+    """
+    from .kinematics import forward_kinematics, joint_centers
+    from .segment_align import SEGMENT_TABLE
+
+    if "pelvis" not in seg_transforms:
+        return {}
+    centers = joint_centers(model)
+
+    def span(body: str) -> float | None:
+        row = SEGMENT_TABLE.get(body)
+        if row is None:
+            return None
+        _, _, mp, md = row
+        a = np.asarray(global_transform.apply(np.asarray(sample.joint_coords[mp], float)), float)
+        b = np.asarray(global_transform.apply(np.asarray(sample.joint_coords[md], float)), float)
+        return float(np.linalg.norm(b - a))
+
+    F = [span("femur_r"), span("femur_l")]
+    T = [span("tibia_r"), span("tibia_l")]
+    if None in F + T or "hip_r" not in centers or "hip_l" not in centers:
+        return {}
+    LL = (9.0 + 1000.0 * (np.mean(F) + np.mean(T))) / (1.0 - 0.078)  # mm
+    width = 2.0 * (8.0 + 0.086 * LL) / 1000.0  # m
+    w0 = float(np.linalg.norm(np.asarray(centers["hip_r"]) - np.asarray(centers["hip_l"])))
+    longs = [frame_scale(seg_transforms[b]) for b in ("femur_r", "femur_l", "tibia_r", "tibia_l")
+             if b in seg_transforms]
+    s_bone = float(np.mean(longs)) if longs else frame_scale(seg_transforms["pelvis"])
+    D = np.diag([s_bone, s_bone, width / w0])
+    S = np.asarray(seg_transforms["pelvis"], float)
+    Rn = S[:3, :3] / frame_scale(S)
+    wb = forward_kinematics(model)["pelvis"]
+    Rb, ob = np.asarray(wb.rotation, float), np.asarray(wb.translation, float)
+    body = np.eye(4)
+    body[:3, :3] = Rn @ Rb @ D
+    body[:3, 3] = S[:3, :3] @ ob + S[:3, 3]  # the pelvis origin lands where the landmark fit put it
+    W = np.eye(4)
+    W[:3, :3], W[:3, 3] = Rb, ob
+    seg = body @ np.linalg.inv(W)
+    out = {}
+    for b in ("pelvis", "sacrum"):
+        if b in seg_transforms:
+            seg_transforms[b] = seg.copy()
+            out[b] = (s_bone, s_bone, float(width / w0))
+    return out
+
+
 def _as_index_map(correspondence) -> dict[str, list[int]]:
     """Accept either a CorrespondenceFile or a plain {marker: indices} mapping."""
     if hasattr(correspondence, "markers"):
@@ -84,6 +179,8 @@ def generate_subject_osim(
     shape_basis: ShapeBasis | None = None,
     alignment_markers=None,
     frozen_markers=(),
+    pelvis: str | None = None,
+    frame_scales: bool = False,
 ):
     """Write ``dst`` = ``src`` with mapped markers moved onto ``sample``'s skin.
 
@@ -117,6 +214,13 @@ def generate_subject_osim(
 
     - ``shape_basis`` omitted (default) -> returns the ``{marker: location}`` dict, as
       before. The written ``.osim`` keeps the source skeleton (bones NOT scaled).
+    - ``frame_scales=True`` -> returns a :class:`SubjectOsim` whose ``segment_scales`` are the
+      scales of the frames the markers were EXPRESSED in (see :func:`marker_frame_scales`): the
+      ones a downstream fit must apply for the markers to sit on the skin. Takes precedence over
+      ``shape_basis``.
+    - ``pelvis="hara2016"`` -> pelvis width from Hara et al. 2016 on the fitted leg length
+      instead of the global bone scale (see :func:`pelvis_hara2016`); pelvis markers are
+      expressed for that pelvis.
     - ``shape_basis`` given -> returns a :class:`SubjectOsim` carrying both the marker
       locations AND ``segment_scales`` (every model body -> isotropic ``(sx, sy, sz)``,
       1.0 = unscaled) read from the subject's rig joints. The scales are for an OpenSim
@@ -136,6 +240,11 @@ def generate_subject_osim(
     seg_transforms = compute_segment_transforms(
         sample, model, global_transform, landmark_map=landmark_map
     )
+    aniso: dict = {}
+    if pelvis == "hara2016":
+        aniso = pelvis_hara2016(seg_transforms, model, sample, global_transform)
+    elif pelvis is not None:
+        raise ValueError(f"unknown pelvis option {pelvis!r} (expected None or 'hara2016')")
     # Lazily built only if an elbow-exempt marker is actually present: the same
     # transforms but with the forearm roll disabled, so epicondyle markers stay put.
     seg_no_roll: dict | None = None
@@ -169,6 +278,11 @@ def generate_subject_osim(
         locations[marker_name] = (float(local[0]), float(local[1]), float(local[2]))
 
     write_osim_with_markers(src_osim_path, dst_osim_path, locations)
+    if frame_scales:
+        return SubjectOsim(
+            marker_locations=locations,
+            segment_scales=marker_frame_scales(seg_transforms, [b.name for b in model.bodies], aniso),
+        )
     if shape_basis is None:
         return locations
     segment_scales = segment_scales_from_joints(
