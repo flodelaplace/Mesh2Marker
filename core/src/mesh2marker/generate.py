@@ -227,6 +227,39 @@ def trunk_after_pelvis(seg_transforms: dict, model, sample: MhrSample, global_tr
     return out
 
 
+def chain_consistent(seg_transforms: dict, model, root: str = "pelvis") -> None:
+    """Re-place every segment along the KINEMATIC CHAIN (edits ``seg_transforms``).
+
+    The per-segment fit places each body independently on the subject (long bones end to end, pelvis/torso/head by
+    landmark Procrustes). Marker locations are then expressed against those free placements, but in OpenSim the
+    bodies form a chain: a child sits where its parent's joint puts it. When the two disagree, markers land off the
+    skin once the model is assembled (P16: torso ~2 cm low, the downstream fit inflated the head to compensate).
+    Here each body keeps the ROTATION and SIZE of its fit, and its translation is recomputed top-down from ``root``
+    so that its joint centre lands exactly where its (already placed) parent sends that joint.
+    """
+    from .kinematics import joint_centers
+
+    centers = {k: np.asarray(v, float) for k, v in joint_centers(model).items()}
+    children: dict[str, list] = {}
+    for j in model.joints:
+        children.setdefault(j.parent_body, []).append(j)
+    queue = [root]
+    seen = {root}
+    while queue:
+        parent = queue.pop(0)
+        sp = np.asarray(seg_transforms.get(parent, np.eye(4)), float)
+        for j in children.get(parent, []):
+            c = j.child_body
+            if c in seen or j.name not in centers:
+                continue
+            seen.add(c)
+            target = sp[:3, :3] @ centers[j.name] + sp[:3, 3]
+            sc = np.array(seg_transforms.get(c, np.eye(4)), dtype=float)
+            sc[:3, 3] = target - sc[:3, :3] @ centers[j.name]
+            seg_transforms[c] = sc
+            queue.append(c)
+
+
 def _as_index_map(correspondence) -> dict[str, list[int]]:
     """Accept either a CorrespondenceFile or a plain {marker: indices} mapping."""
     if hasattr(correspondence, "markers"):
@@ -249,6 +282,7 @@ def generate_subject_osim(
     trunk: str | None = None,
     trunk_span: float | None = None,
     global_scale: bool = True,
+    chain: bool = False,
 ):
     """Write ``dst`` = ``src`` with mapped markers moved onto ``sample``'s skin.
 
@@ -288,6 +322,8 @@ def generate_subject_osim(
       ``shape_basis``.
     - ``imposed_scales`` ({body: (sx, sy, sz)}) -> those bodies keep the fit's placement but take
       the given size, and their markers are expressed for it (one scale source for the whole chain).
+    - ``chain=True`` -> segments re-placed along the kinematic chain (rotation and size of their fit, translation
+      from their parent's joint), see :func:`chain_consistent`.
     - ``global_scale=False`` -> rigid global alignment (subject given at true metric size): segment
       scales are absolute sizes rather than proportions.
     - ``trunk="after_pelvis"`` -> lumbar column + torso scaled AFTER the pelvis so the hip-to-shoulder
@@ -317,28 +353,30 @@ def generate_subject_osim(
     seg_transforms = compute_segment_transforms(
         sample, model, global_transform, landmark_map=landmark_map
     )
-    aniso: dict = {}
-    if imposed_scales:
-        # Echelles DONNEES de l'exterieur (ex. pre-scaling sur les centres articulaires de l'essai) : chaque
-        # segment garde le placement du calage et prend cette taille ; les marqueurs sont exprimes pour elle.
-        for b_name, sc in imposed_scales.items():
-            if b_name in {bd.name for bd in model.bodies}:
-                impose_body_scale(seg_transforms, model, b_name, sc)
-                aniso[b_name] = tuple(float(x) for x in np.asarray(sc, float).reshape(3))
-    if pelvis == "hara2016":
-        _longs = {k: v for k, v in (imposed_scales or {}).items()
-                  if k in ("femur_r", "femur_l", "tibia_r", "tibia_l")}
-        aniso.update(pelvis_hara2016(seg_transforms, model, sample, global_transform,
-                                     long_scales=_longs or None))
-    elif pelvis is not None:
-        raise ValueError(f"unknown pelvis option {pelvis!r} (expected None or 'hara2016')")
-    if trunk == "after_pelvis":
-        # the trunk AFTER the pelvis: the subject's hip -> shoulder height is kept
-        ps = aniso.get("pelvis") or (frame_scale(seg_transforms["pelvis"]),) * 3
-        aniso.update(trunk_after_pelvis(seg_transforms, model, sample, global_transform, ps,
-                                        target_span=trunk_span))
-    elif trunk is not None:
-        raise ValueError(f"unknown trunk option {trunk!r} (expected None or 'after_pelvis')")
+    def _ajuster(seg: dict) -> dict:
+        """Imposed sizes, Hara pelvis, trunk after pelvis, kinematic chain -- the SAME for every transform set."""
+        aniso: dict = {}
+        if imposed_scales:
+            for b_name, sc in imposed_scales.items():
+                if b_name in {bd.name for bd in model.bodies}:
+                    impose_body_scale(seg, model, b_name, sc)
+                    aniso[b_name] = tuple(float(x) for x in np.asarray(sc, float).reshape(3))
+        if pelvis == "hara2016":
+            _longs = {k: v for k, v in (imposed_scales or {}).items()
+                      if k in ("femur_r", "femur_l", "tibia_r", "tibia_l")}
+            aniso.update(pelvis_hara2016(seg, model, sample, global_transform, long_scales=_longs or None))
+        elif pelvis is not None:
+            raise ValueError(f"unknown pelvis option {pelvis!r} (expected None or 'hara2016')")
+        if trunk == "after_pelvis":
+            ps = aniso.get("pelvis") or (frame_scale(seg["pelvis"]),) * 3
+            aniso.update(trunk_after_pelvis(seg, model, sample, global_transform, ps, target_span=trunk_span))
+        elif trunk is not None:
+            raise ValueError(f"unknown trunk option {trunk!r} (expected None or 'after_pelvis')")
+        if chain:
+            chain_consistent(seg, model)
+        return aniso
+
+    aniso = _ajuster(seg_transforms)
     # Lazily built only if an elbow-exempt marker is actually present: the same
     # transforms but with the forearm roll disabled, so epicondyle markers stay put.
     seg_no_roll: dict | None = None
@@ -365,6 +403,7 @@ def generate_subject_osim(
                     sample, model, global_transform,
                     landmark_map=landmark_map, apply_forearm_roll=False,
                 )
+                _ajuster(seg_no_roll)  # memes tailles et meme chaine que les autres marqueurs
             seg = seg_no_roll
         local = reposition_marker_to_vertex(
             model, marker_name, sample.verts, idx, global_transform, seg
