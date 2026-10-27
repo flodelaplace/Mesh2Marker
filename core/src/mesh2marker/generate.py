@@ -182,11 +182,87 @@ def pelvis_hara2016(seg_transforms: dict, model, sample: MhrSample, global_trans
     return out
 
 
+def pelvis_hara2016_3d(seg_transforms: dict, model, sample: MhrSample, global_transform,
+                       landmark_map: dict) -> tuple[dict[str, tuple[float, float, float]], np.ndarray | None]:
+    """Hip-joint centres at the HEIGHT given by Hara et al. 2016, femur sized from them (edits ``seg_transforms``).
+
+    The rig's hip centres are not anatomical, and the femur measured from them inherits the error. Hara et al. 2016
+    (Sci Rep 6:37707, CT, n = 157) give the hip centre in the conventional-gait-model pelvis frame (origin mid-ASIS,
+    X anterior, Y lateral, Z superior), in mm, from the leg length LL alone: X = 11 - 0.063 LL, Y = 8 + 0.086 LL,
+    Z = -9 - 0.078 LL. LL is measured as in the clinic, on the SKIN of the subject's rest body: ASIS -> medial femoral
+    condyle -> medial malleolus (mean of both sides).
+
+    The pelvis keeps its shape (width from Hara, :func:`pelvis_hara2016`) and the rotation of its fit; it is moved
+    along the subject's pelvic vertical so that its mid hip centre sits Z below the subject's mid-ASIS. Only the
+    height: the ASIS skin of a corpulent subject is far in front of the bone (antero-posterior), barely above it.
+    Each femur then gets the isotropic scale of its new span hip centre -> rig knee centre. Returns the scales set
+    and the world mid hip centre (the trunk is measured from the SAME start point).
+    """
+    from .kinematics import joint_centers
+    from .segment_align import SEGMENT_TABLE, minimal_rotation
+
+    need = ("RASI", "LASI", "RPSI", "LPSI", "RMFC", "LMFC", "RMMAL", "LMMAL")
+    c = {k: np.asarray(v, float) for k, v in joint_centers(model).items()}
+    if "pelvis" not in seg_transforms or not all(n in landmark_map for n in need) or "hip_r" not in c \
+            or "hip_l" not in c:
+        return {}, None
+    V = lambda n: np.asarray(global_transform.apply(np.asarray(sample.verts[landmark_map[n]], float)), float)  # noqa: E731
+    LL = 1000.0 * float(np.mean([np.linalg.norm(V(a) - V(k)) + np.linalg.norm(V(k) - V(m))
+                                  for a, k, m in (("RASI", "RMFC", "RMMAL"), ("LASI", "LMFC", "LMMAL"))]))
+    Zh = (-9.0 - 0.078 * LL) / 1000.0
+    out = pelvis_hara2016(seg_transforms, model, sample, global_transform)
+    if not out:
+        return {}, None
+    S = seg_transforms["pelvis"]
+    # vertical of the subject's pelvis (CGM frame from the skin ASIS / PSIS)
+    asis = (V("RASI") + V("LASI")) / 2
+    psis = (V("RPSI") + V("LPSI")) / 2
+    lat = V("RASI") - V("LASI")
+    lat /= np.linalg.norm(lat)
+    ant = asis - psis
+    ant -= (ant @ lat) * lat
+    ant /= np.linalg.norm(ant)
+    up = np.cross(lat, ant)  # z = x cross y in the CGM frame (x ant, y lat right -> z sup ... sign checked below)
+    if up[1] < 0:
+        up = -up
+    hip = lambda: (S[:3, :3] @ ((c["hip_r"] + c["hip_l"]) / 2) + S[:3, 3])  # noqa: E731
+    dz = float((asis + Zh * up - hip()) @ up)
+    S[:3, 3] = S[:3, 3] + dz * up
+    if "sacrum" in seg_transforms:
+        seg_transforms["sacrum"] = S.copy()
+    hips = {sd: S[:3, :3] @ c[f"hip_{sd}"] + S[:3, 3] for sd in ("r", "l")}
+    for sd in ("r", "l"):
+        body = f"femur_{sd}"
+        row = SEGMENT_TABLE.get(body)
+        if body not in seg_transforms or row is None or row[1] not in c:
+            continue
+        knee = np.asarray(global_transform.apply(np.asarray(sample.joint_coords[row[3]], float)), float)
+        L0 = float(np.linalg.norm(c[row[1]] - c[f"hip_{sd}"]))
+        s_f = float(np.linalg.norm(knee - hips[sd]) / L0)
+        impose_body_scale(seg_transforms, model, body, (s_f, s_f, s_f))
+        out[body] = (s_f,) * 3
+        # re-viser le femur : son axe va de la hanche Hara au genou du rig (il partait de la hanche du rig)
+        F = np.array(seg_transforms[body], float)
+        cur = F[:3, :3] @ (c[row[1]] - c[f"hip_{sd}"])
+        Rv = minimal_rotation(cur / np.linalg.norm(cur), (knee - hips[sd]) / np.linalg.norm(knee - hips[sd]))
+        F[:3, :3] = Rv @ F[:3, :3]
+        F[:3, 3] = hips[sd] - F[:3, :3] @ c[f"hip_{sd}"]
+        seg_transforms[body] = F
+    rig_h = np.mean([np.asarray(global_transform.apply(np.asarray(sample.joint_coords[SEGMENT_TABLE[f"femur_{sd}"][2]],
+                                                                  float)), float) for sd in ("r", "l")], axis=0)
+    print(f"  [hara 3D] LL {LL:.0f} mm ; hanches {1000 * Zh:.0f} mm sous les ASIS (rig : "
+          f"{1000 * float((rig_h - asis) @ up):.0f}) ; bassin deplace de {1000 * dz:+.0f} mm ; "
+          f"femur {round(out.get('femur_r', (0,))[0], 3)}")
+    out["_hips"] = hips
+    return out, (hips["r"] + hips["l"]) / 2
+
+
 TRUNK_BODIES = ("lumbar5", "lumbar4", "lumbar3", "lumbar2", "lumbar1", "Abdomen", "torso")
 
 
 def trunk_after_pelvis(seg_transforms: dict, model, sample: MhrSample, global_transform,
-                       pelvis_scale, target_span: float | None = None) -> dict[str, tuple[float, float, float]]:
+                       pelvis_scale, target_span: float | None = None,
+                       hip_mid: np.ndarray | None = None) -> dict[str, tuple[float, float, float]]:
     """Trunk scale computed AFTER the pelvis, so the skeleton keeps its hip-to-shoulder height (edits ``seg_transforms``).
 
     The hip-to-shoulder span crosses the pelvis (hips -> L5/S1) then the lumbar column and torso. Its length is
@@ -209,7 +285,8 @@ def trunk_after_pelvis(seg_transforms: dict, model, sample: MhrSample, global_tr
     J = lambda i: np.asarray(global_transform.apply(np.asarray(sample.joint_coords[i], float)), float)  # noqa: E731
     hips = [SEGMENT_TABLE["femur_r"][2], SEGMENT_TABLE["femur_l"][2]]
     shoulders = [SEGMENT_TABLE["humerus_r"][2], SEGMENT_TABLE["humerus_l"][2]]
-    D = float(np.linalg.norm((J(shoulders[0]) + J(shoulders[1])) / 2 - (J(hips[0]) + J(hips[1])) / 2))
+    H_s = (J(hips[0]) + J(hips[1])) / 2 if hip_mid is None else np.asarray(hip_mid, float)  # depart : hanches Hara
+    D = float(np.linalg.norm((J(shoulders[0]) + J(shoulders[1])) / 2 - H_s))
     if target_span is not None:  # hauteur hanches -> epaules donnee (ex. centres articulaires de l'essai)
         D = float(target_span)
     u = np.diag(np.asarray(pelvis_scale, float).reshape(3)) @ (B - H)
@@ -227,7 +304,105 @@ def trunk_after_pelvis(seg_transforms: dict, model, sample: MhrSample, global_tr
     return out
 
 
-def chain_consistent(seg_transforms: dict, model, root: str = "pelvis") -> None:
+def trunk_from_acromions(seg_transforms: dict, model, sample: MhrSample, global_transform, pelvis_scale,
+                         landmark_map: dict, target_span: float | None = None,
+                         acromions: tuple[str, str] = ("RACR", "LACR")) -> dict[str, tuple[float, float, float]]:
+    """Trunk sized on the ACROMIONS, after the pelvis (edits ``seg_transforms``).
+
+    The rig's shoulder joints are not anatomical (P16: 35.9 cm apart where the opto-scaled reference model puts the
+    glenohumeral centres 40.0 cm apart). The acromions are subcutaneous bony landmarks -- little soft tissue whatever
+    the corpulence -- so they size the trunk instead:
+      - WIDTH (torso z, medio-lateral): subject inter-acromion distance / the model's own acromion markers ;
+      - HEIGHT (torso x, y and the lumbar column, isotropic): solved, after the pelvis, so that mid-hip -> mid-acromion
+        of the model equals the subject's: ``| diag(pelvis_scale)(B - H) + diag(s, s, w)(A - B) | = D``, H/B/A =
+        mid-hip, L5/S1, mid-acromion of the neutral model (A - B is ~ sagittal, so w barely enters).
+    ``target_span`` overrides D (e.g. the walking median, the rest pose having the shoulders ~1 cm higher). The shoulder
+    joints then sit where the model's geometry puts them relative to the acromions.
+    """
+    from .kinematics import joint_centers
+    from .markers import neutral_marker_world_positions
+    from .segment_align import SEGMENT_TABLE
+
+    c = {k: np.asarray(v, float) for k, v in joint_centers(model).items()}
+    mw = neutral_marker_world_positions(model)
+    ar, al = acromions
+    if not all(k in c for k in ("hip_r", "hip_l", "L5_S1_IVDjnt")) or ar not in mw or al not in mw \
+            or ar not in landmark_map or al not in landmark_map:
+        return {}
+    V = lambda name: np.asarray(global_transform.apply(np.asarray(sample.verts[landmark_map[name]], float)), float)  # noqa: E731
+    J = lambda i: np.asarray(global_transform.apply(np.asarray(sample.joint_coords[i], float)), float)  # noqa: E731
+    w = float(np.linalg.norm(V(ar) - V(al)) / np.linalg.norm(mw[ar] - mw[al]))
+    hips = [SEGMENT_TABLE["femur_r"][2], SEGMENT_TABLE["femur_l"][2]]
+    D = float(np.linalg.norm((V(ar) + V(al)) / 2 - (J(hips[0]) + J(hips[1])) / 2))
+    if target_span is not None:
+        D = float(target_span)
+    H = (c["hip_r"] + c["hip_l"]) / 2
+    B = c["L5_S1_IVDjnt"]
+    A = (mw[ar] + mw[al]) / 2
+    u = np.diag(np.asarray(pelvis_scale, float).reshape(3)) @ (B - H)
+    v = A - B
+    vh, vw = np.array([v[0], v[1], 0.0]), np.array([0.0, 0.0, v[2]])  # height part scales with s, width part with w
+    u2 = u + w * vw
+    a, b, cc = float(vh @ vh), float(2 * u2 @ vh), float(u2 @ u2 - D * D)
+    disc = b * b - 4 * a * cc
+    if a <= 0 or disc < 0:
+        return {}
+    s_h = float((-b + np.sqrt(disc)) / (2 * a))
+    out = {}
+    names = {x.name for x in model.bodies}
+    for bd in TRUNK_BODIES:
+        if bd not in names:
+            continue
+        sc = (s_h, s_h, w) if bd in ("torso", "Abdomen") else (s_h, s_h, s_h)
+        impose_body_scale(seg_transforms, model, bd, sc)
+        out[bd] = tuple(float(x) for x in sc)
+    return out
+
+
+def trunk_from_skin_height(seg_transforms: dict, model, sample: MhrSample, global_transform, pelvis_scale,
+                           landmark_map: dict,
+                           pelvis_markers: tuple[str, ...] = ("RASI", "LASI", "RPSI", "LPSI"),
+                           acromions: tuple[str, str] = ("RACR", "LACR")) -> dict[str, tuple[float, float, float]]:
+    """Trunk HEIGHT from skin landmarks, after the pelvis (edits ``seg_transforms``).
+
+    Starting point and end point are the same on the subject and on the model: the mid of the four iliac spines and
+    the mid of the acromions -- not the rig's hip centres, which are not anatomical (the pelvis is sized by Hara, so
+    a span measured from the rig hips would sit the trunk on a different base). Only the VERTICAL component is used:
+    soft tissue thickens the body mostly forwards and sideways, so the iliac spines of a corpulent subject move little
+    in height. With the pelvis already sized (``pelvis_scale``), one isotropic scale s for the lumbar column and torso
+    solves ``Dy_subject = ps_y (B - P)_y + s (A - B)_y`` (P, B, A = mid iliac spines, L5/S1, mid acromions of the
+    neutral model). The width is left to that scale (no separate medio-lateral factor).
+    """
+    from .kinematics import joint_centers
+    from .markers import neutral_marker_world_positions
+
+    c = {k: np.asarray(v, float) for k, v in joint_centers(model).items()}
+    mw = neutral_marker_world_positions(model)
+    need = tuple(pelvis_markers) + tuple(acromions)
+    if "L5_S1_IVDjnt" not in c or not all(n in mw and n in landmark_map for n in need):
+        return {}
+    V = lambda name: np.asarray(global_transform.apply(np.asarray(sample.verts[landmark_map[name]], float)), float)  # noqa: E731
+    mid = lambda f, names: np.mean([f(n) for n in names], axis=0)  # noqa: E731
+    Dy = float(mid(V, acromions)[1] - mid(V, pelvis_markers)[1])
+    P, B, A = mid(mw.__getitem__, pelvis_markers), c["L5_S1_IVDjnt"], mid(mw.__getitem__, acromions)
+    ps_y = float(np.asarray(pelvis_scale, float).reshape(3)[1])
+    den = float((A - B)[1])
+    if den <= 0:
+        return {}
+    s_h = (Dy - ps_y * float((B - P)[1])) / den
+    if not np.isfinite(s_h) or s_h <= 0:
+        return {}
+    out = {}
+    names = {x.name for x in model.bodies}
+    for bd in TRUNK_BODIES:
+        if bd in names:
+            impose_body_scale(seg_transforms, model, bd, (s_h, s_h, s_h))
+            out[bd] = (float(s_h),) * 3
+    return out
+
+
+def chain_consistent(seg_transforms: dict, model, root: str = "pelvis",
+                     stop: tuple[str, ...] = ("humerus_r", "humerus_l")) -> None:
     """Re-place every segment along the KINEMATIC CHAIN (edits ``seg_transforms``).
 
     The per-segment fit places each body independently on the subject (long bones end to end, pelvis/torso/head by
@@ -236,6 +411,10 @@ def chain_consistent(seg_transforms: dict, model, root: str = "pelvis") -> None:
     skin once the model is assembled (P16: torso ~2 cm low, the downstream fit inflated the head to compensate).
     Here each body keeps the ROTATION and SIZE of its fit, and its translation is recomputed top-down from ``root``
     so that its joint centre lands exactly where its (already placed) parent sends that joint.
+
+    The chain stops at ``stop`` (default: the arms). The arm bones keep their fit on the rig's elbow and wrist
+    centres: hanging the humerus from the model's shoulder moved it ~6 cm off the subject's arm (P16), and the IK then
+    rotated the forearm and hand around a wrong axis.
     """
     from .kinematics import joint_centers
 
@@ -250,7 +429,7 @@ def chain_consistent(seg_transforms: dict, model, root: str = "pelvis") -> None:
         sp = np.asarray(seg_transforms.get(parent, np.eye(4)), float)
         for j in children.get(parent, []):
             c = j.child_body
-            if c in seen or j.name not in centers:
+            if c in seen or j.name not in centers or c in stop:
                 continue
             seen.add(c)
             target = sp[:3, :3] @ centers[j.name] + sp[:3, 3]
@@ -258,6 +437,69 @@ def chain_consistent(seg_transforms: dict, model, root: str = "pelvis") -> None:
             sc[:3, 3] = target - sc[:3, :3] @ centers[j.name]
             seg_transforms[c] = sc
             queue.append(c)
+
+
+def place_least_squares(seg_transforms: dict, model, sample: MhrSample, global_transform,
+                        hip_targets: dict | None = None, w_joint: float = 1000.0, w_target: float = 10.0,
+                        w_prior: float = 0.01, free_joints: tuple[str, ...] = ("acromial_r", "acromial_l")) -> dict:
+    """Place every segment at once by weighted least squares (edits ``seg_transforms``).
+
+    Each body keeps the ROTATION and SIZE of its fit (so the marker logic, forearm roll included, is untouched);
+    only the translations are solved, jointly, so that:
+      - parent and child agree on each joint centre (weight ``w_joint``, near hard);
+      - the reliable centres land on their targets (``w_target``): the rig's knees, ankles, elbows, wrists, and
+        the hip centres given in ``hip_targets`` (Hara) when present;
+      - each body stays near its own fit (``w_prior``, fixes what nothing else constrains).
+    Unlike :func:`chain_consistent` (top-down), an error anywhere is shared out instead of being carried down to the
+    feet. The shoulders (``free_joints``) are not tied: the arms keep their fit on the rig's elbow and wrist.
+    Returns the residual (m) per target joint.
+    """
+    from .kinematics import joint_centers
+    from .segment_align import SEGMENT_TABLE
+
+    centers = {k: np.asarray(v, float) for k, v in joint_centers(model).items()}
+    bodies = [b.name for b in model.bodies if b.name in seg_transforms]
+    idx = {b: i for i, b in enumerate(bodies)}
+    n = len(bodies)
+    J = lambda i: np.asarray(global_transform.apply(np.asarray(sample.joint_coords[i], float)), float)  # noqa: E731
+    targets: dict[str, np.ndarray] = {}
+    for jp, jd, mp, md in SEGMENT_TABLE.values():
+        for jn, mi in ((jp, mp), (jd, md)):
+            if jn.startswith(("walker_knee", "ankle", "elbow", "radius_hand")):
+                targets[jn] = J(mi)
+    for jn, t in (hip_targets or {}).items():
+        targets[jn] = np.asarray(t, float)
+    A = {b: np.asarray(seg_transforms[b], float)[:3, :3] for b in bodies}
+    rows, rhs = [], []
+
+    def eq(coefs: dict, const: np.ndarray, w: float) -> None:
+        for k in range(3):
+            r = np.zeros(3 * n)
+            for b, c in coefs.items():
+                r[3 * idx[b] + k] = c * w
+            rows.append(r)
+            rhs.append(-const[k] * w)
+
+    target_body: dict[str, str] = {}
+    for j in model.joints:
+        p, c = j.parent_body, j.child_body
+        if j.name not in centers or c not in idx:
+            continue
+        X = centers[j.name]
+        if j.name in targets:
+            target_body[j.name] = c
+            eq({c: 1.0}, A[c] @ X - targets[j.name], w_target)
+        if p in idx and j.name not in free_joints:
+            eq({p: 1.0, c: -1.0}, A[p] @ X - A[c] @ X, w_joint)
+    for b in bodies:
+        eq({b: 1.0}, -np.asarray(seg_transforms[b], float)[:3, 3], w_prior)
+    sol, *_ = np.linalg.lstsq(np.array(rows), np.array(rhs), rcond=None)
+    for b in bodies:
+        S = np.array(seg_transforms[b], float)
+        S[:3, 3] = sol[3 * idx[b]:3 * idx[b] + 3]
+        seg_transforms[b] = S
+    return {jn: float(np.linalg.norm(A[b] @ centers[jn] + sol[3 * idx[b]:3 * idx[b] + 3] - targets[jn]))
+            for jn, b in target_body.items()}
 
 
 def _as_index_map(correspondence) -> dict[str, list[int]]:
@@ -282,7 +524,8 @@ def generate_subject_osim(
     trunk: str | None = None,
     trunk_span: float | None = None,
     global_scale: bool = True,
-    chain: bool = False,
+    chain: bool | str = False,
+    global_first: bool = False,
 ):
     """Write ``dst`` = ``src`` with mapped markers moved onto ``sample``'s skin.
 
@@ -347,15 +590,33 @@ def generate_subject_osim(
         for name, indices in index_map.items()
         if indices
     }
+    _full_landmarks = dict(landmark_map)  # tous les reperes de la carte (le tronc par les acromions s'en sert)
     if alignment_markers is not None:
         allowed = set(alignment_markers)
         landmark_map = {n: v for n, v in landmark_map.items() if n in allowed}
     seg_transforms = compute_segment_transforms(
         sample, model, global_transform, landmark_map=landmark_map
     )
+    _ctx: dict = {}
+
     def _ajuster(seg: dict) -> dict:
         """Imposed sizes, Hara pelvis, trunk after pelvis, kinematic chain -- the SAME for every transform set."""
         aniso: dict = {}
+        _ctx.clear()
+        if global_first:
+            # « ScaleTool global » d'abord : le modele entier a la stature du sujet ; seuls les segments sans mesure
+            # propre (pieds, mains) gardent ce facteur, les autres sont ensuite mis a leur taille mesuree
+            from .markers import neutral_marker_world_positions
+            mw0 = neutral_marker_world_positions(model)
+            feet = [mw0[n][1] for n in mw0 if any(t in n for t in ("HEE", "MT", "TOE", "SOLE"))]
+            if "HTOP" in mw0 and feet:
+                ys = np.asarray(global_transform.apply(np.asarray(sample.verts, float)), float)[:, 1]
+                g = float(np.ptp(ys) / (mw0["HTOP"][1] - min(feet)))
+                for bd in ("calcn_r", "calcn_l", "toes_r", "toes_l", "hand_r", "hand_l"):
+                    if bd in seg:
+                        impose_body_scale(seg, model, bd, (g, g, g))
+                        aniso[bd] = (g, g, g)
+                print(f"  [echelle globale] stature sujet / modele = {g:.3f} (pieds, mains)")
         if imposed_scales:
             for b_name, sc in imposed_scales.items():
                 if b_name in {bd.name for bd in model.bodies}:
@@ -365,14 +626,49 @@ def generate_subject_osim(
             _longs = {k: v for k, v in (imposed_scales or {}).items()
                       if k in ("femur_r", "femur_l", "tibia_r", "tibia_l")}
             aniso.update(pelvis_hara2016(seg, model, sample, global_transform, long_scales=_longs or None))
+        elif pelvis == "hara2016_3d":
+            _sc, _hjc = pelvis_hara2016_3d(seg, model, sample, global_transform, _full_landmarks)
+            _ctx["hips"] = _sc.pop("_hips", None)
+            aniso.update(_sc)
+            if _hjc is not None:
+                _ctx["hjc"] = _hjc
         elif pelvis is not None:
-            raise ValueError(f"unknown pelvis option {pelvis!r} (expected None or 'hara2016')")
+            raise ValueError(f"unknown pelvis option {pelvis!r} (expected None, 'hara2016' or 'hara2016_3d')")
         if trunk == "after_pelvis":
             ps = aniso.get("pelvis") or (frame_scale(seg["pelvis"]),) * 3
-            aniso.update(trunk_after_pelvis(seg, model, sample, global_transform, ps, target_span=trunk_span))
+            aniso.update(trunk_after_pelvis(seg, model, sample, global_transform, ps, target_span=trunk_span,
+                                            hip_mid=_ctx.get("hjc")))
+        elif trunk == "acromion":
+            ps = aniso.get("pelvis") or (frame_scale(seg["pelvis"]),) * 3
+            aniso.update(trunk_from_acromions(seg, model, sample, global_transform, ps,
+                                              {n: v for n, v in _full_landmarks.items()}, target_span=trunk_span))
+        elif trunk == "after_pelvis_acromion_width":
+            # hauteur comme after_pelvis (le squelette est a la hauteur du gold), LARGEUR (z du torse) par la distance
+            # entre acromions du sujet sur celle des marqueurs du modele (les centres d'epaule du rig sont trop serres)
+            ps = aniso.get("pelvis") or (frame_scale(seg["pelvis"]),) * 3
+            th = trunk_after_pelvis(seg, model, sample, global_transform, ps, target_span=trunk_span,
+                                    hip_mid=_ctx.get("hjc"))
+            aw = trunk_from_acromions({k: v.copy() for k, v in seg.items()}, model, sample, global_transform, ps,
+                                      _full_landmarks)
+            if th and aw:
+                w = aw["torso"][2]
+                for bd, sc in th.items():
+                    sc2 = (sc[0], sc[1], w) if bd in ("torso", "Abdomen") else sc
+                    impose_body_scale(seg, model, bd, sc2)
+                    th[bd] = tuple(float(x) for x in sc2)
+            aniso.update(th)
+        elif trunk == "skin_height":
+            ps = aniso.get("pelvis") or (frame_scale(seg["pelvis"]),) * 3
+            aniso.update(trunk_from_skin_height(seg, model, sample, global_transform, ps, _full_landmarks))
         elif trunk is not None:
-            raise ValueError(f"unknown trunk option {trunk!r} (expected None or 'after_pelvis')")
-        if chain:
+            raise ValueError(f"unknown trunk option {trunk!r} (expected None, 'after_pelvis', 'acromion' or 'skin_height')")
+        if chain == "least_squares":
+            hips = _ctx.get("hips") or {}
+            res = place_least_squares(seg, model, sample, global_transform,
+                                      hip_targets={f"hip_{sd}": v for sd, v in hips.items()})
+            print("  [placement moindres carres] residus (mm) : "
+                  + ", ".join(f"{k} {1000 * v:.1f}" for k, v in sorted(res.items())))
+        elif chain:
             chain_consistent(seg, model)
         return aniso
 
