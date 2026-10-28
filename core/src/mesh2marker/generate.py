@@ -257,6 +257,45 @@ def pelvis_hara2016_3d(seg_transforms: dict, model, sample: MhrSample, global_tr
     return out, (hips["r"] + hips["l"]) / 2
 
 
+def foot_from_sole(seg_transforms: dict, model, sample: MhrSample, global_transform,
+                   landmark_map: dict) -> dict[str, tuple[float, float, float]]:
+    """Foot sized on the SOLE so it sits flat under the skin (edits ``seg_transforms``).
+
+    Measured on the subject's rest body and on the model, side by side: the ANKLE HEIGHT above the plantar plane (the
+    sole markers SOLE_*) and the FOOT LENGTH (heel-most to toe-most sole marker, along the foot). Talus, calcaneus and
+    toes get (length ratio, height ratio, length ratio) in the OpenSim foot frame (x forward, y up, z lateral). With the
+    ankle on the rig's ankle centre, the bony sole then lands on the skin sole instead of floating ~2 cm above it (P16,
+    least-squares placement, foot scaled x1.0 or by stature).
+    """
+    from .kinematics import joint_centers
+    from .markers import neutral_marker_world_positions
+    from .segment_align import SEGMENT_TABLE
+
+    c = {k: np.asarray(v, float) for k, v in joint_centers(model).items()}
+    mw = neutral_marker_world_positions(model)
+    V = lambda n: np.asarray(global_transform.apply(np.asarray(sample.verts[landmark_map[n]], float)), float)  # noqa: E731
+    out: dict = {}
+    for sd in ("r", "l"):
+        sole = [n for n in landmark_map if n.startswith("SOLE") and n.endswith(f"_{sd}") and n in mw]
+        ank = f"ankle_{sd}"
+        if len(sole) < 3 or ank not in c:
+            continue
+        Ps = np.array([V(n) for n in sole]); Pm = np.array([mw[n] for n in sole])
+        J = np.asarray(global_transform.apply(np.asarray(sample.joint_coords[SEGMENT_TABLE[f"tibia_{sd}"][3]], float)), float)
+        h_s = float(J[1] - Ps[:, 1].min()); h_m = float(c[ank][1] - Pm[:, 1].min())
+        L_s = float(np.ptp(Ps[:, 0])); L_m = float(np.ptp(Pm[:, 0]))
+        if min(h_s, h_m, L_s, L_m) <= 0:
+            continue
+        sc = (L_s / L_m, h_s / h_m, L_s / L_m)
+        for bd in (f"talus_{sd}", f"calcn_{sd}", f"toes_{sd}"):
+            if bd in seg_transforms:
+                impose_body_scale(seg_transforms, model, bd, sc)
+                out[bd] = tuple(float(x) for x in sc)
+        print(f"  [pied par la semelle] {sd} : cheville {100 * h_s:.1f} cm au-dessus de la semelle (modele {100 * h_m:.1f}), "
+              f"longueur {100 * L_s:.1f} cm (modele {100 * L_m:.1f}) -> echelle {[round(x, 3) for x in sc]}")
+    return out
+
+
 TRUNK_BODIES = ("lumbar5", "lumbar4", "lumbar3", "lumbar2", "lumbar1", "Abdomen", "torso")
 
 
@@ -526,6 +565,7 @@ def generate_subject_osim(
     global_scale: bool = True,
     chain: bool | str = False,
     global_first: bool = False,
+    foot: str | None = None,
 ):
     """Write ``dst`` = ``src`` with mapped markers moved onto ``sample``'s skin.
 
@@ -617,6 +657,8 @@ def generate_subject_osim(
                         impose_body_scale(seg, model, bd, (g, g, g))
                         aniso[bd] = (g, g, g)
                 print(f"  [echelle globale] stature sujet / modele = {g:.3f} (pieds, mains)")
+        if foot == "sole":
+            aniso.update(foot_from_sole(seg, model, sample, global_transform, _full_landmarks))
         if imposed_scales:
             for b_name, sc in imposed_scales.items():
                 if b_name in {bd.name for bd in model.bodies}:
